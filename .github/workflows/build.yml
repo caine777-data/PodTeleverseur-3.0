@@ -1,0 +1,194 @@
+name: Build installers
+
+# Compile Pod Téléverseur et fabrique TOUS les livrables en un seul run :
+#   Windows :
+#     • PodTeleverseur.exe          — exécutable portable (aucune installation)
+#     • PodTeleverseur-Setup.exe    — installeur Inno Setup (menu Démarrer + désinstalleur)
+#   macOS :
+#     • PodTeleverseur.dmg          — image disque (glisser dans Applications)
+#     • PodTeleverseur-macOS.zip    — archive .app (compatibilité)
+#
+# Déclencheurs :
+#   • Bouton « Run workflow » dans l'onglet Actions (build manuel)
+#   • Push d'un tag v* (ex : v3.0.0) → crée automatiquement une Release GitHub
+#
+# NB : les runners macOS de GitHub sont Apple Silicon → l'app produite est arm64
+#      (ne tourne pas sur Mac Intel sans adaptation).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  # ─────────────────────────────── WINDOWS ───────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # L'icône de l'application est fournie dans assets/icon.ico.
+      # On la copie sous le nom attendu par l'étape de compilation.
+      - name: Préparer l'icône Windows
+        run: copy assets\icon.ico assets\podteleverseur.ico
+
+      - name: Compiler PodTeleverseur.exe (portable)
+        run: |
+          $icon = (Test-Path "assets/podteleverseur.ico") ? "--icon=assets/podteleverseur.ico" : ""
+          pyinstaller --onefile --windowed --name "PodTeleverseur" `
+            --version-file version.txt `
+            $icon `
+            --collect-all customtkinter `
+            --collect-all keyring `
+            --collect-all tkinterdnd2 `
+            --add-data "assets;assets" `
+            app.py
+
+      - name: Publier l'exe portable Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: PodTeleverseur-Windows-portable
+          path: dist/PodTeleverseur.exe
+
+      # Installe Inno Setup (compilateur d'installeurs Windows) via Chocolatey.
+      - name: Installer Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      # Génère le script .iss puis compile l'installeur.
+      # Installation SANS droits administrateur (dans le profil utilisateur),
+      # avec raccourcis menu Démarrer + Bureau et désinstalleur.
+      - name: Fabriquer l'installeur (Inno Setup)
+        run: |
+          $iss = @"
+          [Setup]
+          AppName=Pod Televerseur
+          AppVersion=3.0.0
+          AppPublisher=Universite de Toulouse
+          DefaultDirName={localappdata}\Programs\PodTeleverseur
+          DefaultGroupName=Pod Televerseur
+          PrivilegesRequired=lowest
+          OutputDir=installer
+          OutputBaseFilename=PodTeleverseur-Setup
+          Compression=lzma
+          SolidCompression=yes
+          SetupIconFile=assets\podteleverseur.ico
+          WizardStyle=modern
+
+          [Languages]
+          Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+
+          [Files]
+          Source: "dist\PodTeleverseur.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\Pod Televerseur"; Filename: "{app}\PodTeleverseur.exe"
+          Name: "{group}\Desinstaller Pod Televerseur"; Filename: "{uninstallexe}"
+          Name: "{userdesktop}\Pod Televerseur"; Filename: "{app}\PodTeleverseur.exe"
+
+          [Run]
+          Filename: "{app}\PodTeleverseur.exe"; Description: "Lancer Pod Televerseur"; Flags: nowait postinstall skipifsilent
+          "@
+          # Si l'icône n'a pas été générée, on retire la ligne SetupIconFile.
+          if (-not (Test-Path "assets/podteleverseur.ico")) {
+            $iss = $iss -replace "SetupIconFile=assets\\podteleverseur.ico`r?`n", ""
+          }
+          Set-Content -Path "PodTeleverseur.iss" -Value $iss -Encoding UTF8
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "PodTeleverseur.iss"
+
+      - name: Publier l'installeur Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: PodTeleverseur-Windows-Setup
+          path: installer/PodTeleverseur-Setup.exe
+
+  # ──────────────────────────────── macOS ────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Génère l'icône macOS (.icns) à partir du PNG master, via les outils
+      # Apple sips/iconutil (présents uniquement sur les runners macOS).
+      - name: Générer l'icône macOS (.icns)
+        run: |
+          mkdir -p icon.iconset
+          for s in 16 32 64 128 256 512; do
+            sips -z $s $s assets/icon_master.png --out "icon.iconset/icon_${s}x${s}.png"
+            d=$((s*2))
+            sips -z $d $d assets/icon_master.png --out "icon.iconset/icon_${s}x${s}@2x.png"
+          done
+          iconutil -c icns icon.iconset -o assets/icon.icns
+
+      - name: Compiler PodTeleverseur.app
+        run: |
+          # --onefile : build macOS léger (~20-30 Mo) au prix d'un avertissement
+          # de dépréciation PyInstaller (toléré aujourd'hui, bloquant en v7.0).
+          pyinstaller --onefile --windowed --name "PodTeleverseur" \
+            --icon assets/icon.icns \
+            --collect-all customtkinter \
+            --collect-all keyring \
+            --collect-all tkinterdnd2 \
+            --add-data "assets:assets" \
+            app.py
+
+      - name: Compresser le .app (archive)
+        run: |
+          cd dist
+          zip -r PodTeleverseur-macOS.zip PodTeleverseur.app || zip -r PodTeleverseur-macOS.zip PodTeleverseur
+
+      - name: Publier l'archive macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: PodTeleverseur-macOS-zip
+          path: dist/PodTeleverseur-macOS.zip
+
+      - name: Fabriquer le DMG (glisser-déposer vers Applications)
+        run: |
+          mkdir -p dmg_stage
+          cp -R "dist/PodTeleverseur.app" dmg_stage/ 2>/dev/null || cp -R "dist/PodTeleverseur" dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+          hdiutil create -volname "Pod Televerseur" -srcfolder dmg_stage \
+            -ov -format UDZO "dist/PodTeleverseur.dmg"
+
+      - name: Publier le DMG macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: PodTeleverseur-macOS-DMG
+          path: dist/PodTeleverseur.dmg
+
+  # ──────────────────── Release GitHub (si tag v*) ─────────────────────
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Créer la release et joindre tous les livrables
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            PodTeleverseur-Windows-Setup/PodTeleverseur-Setup.exe
+            PodTeleverseur-Windows-portable/PodTeleverseur.exe
+            PodTeleverseur-macOS-DMG/PodTeleverseur.dmg
+            PodTeleverseur-macOS-zip/PodTeleverseur-macOS.zip

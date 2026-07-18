@@ -1,0 +1,67 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Icône de Pod Téléverseur 3 — Université de Toulouse
+    ===================================================
+    FAMILLE VISUELLE : identique à Pod Téléverseur (fond BLEU arrondi, flèche
+    de téléversement blanche, écran vidéo blanc) → on reconnaît immédiatement
+    la même application.
+
+    CE QUI CHANGE (version 3) : un BADGE ORANGE au crayon en bas à droite,
+    qui signale la nouveauté de cette version — la gestion de ses propres
+    vidéos (renommer, remplacer le fichier, sous-titres, supprimer…).
+    L'orange reprend la couleur des actions de gestion dans l'application
+    (bouton « Remplacer & ré-encoder »).
+  -->
+  <defs>
+    <!-- Fond bleu : même dégradé que Pod Téléverseur -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2449BE"/>
+      <stop offset="1" stop-color="#111D65"/>
+    </linearGradient>
+    <!-- Blanc légèrement dégradé pour l'écran (évite un blanc plat) -->
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef1f8"/>
+    </linearGradient>
+    <!-- Dégradé du badge de gestion -->
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#b45309"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fond : carré arrondi bleu (identité Pod Téléverseur) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="225" fill="url(#bg)"/>
+
+  <!-- Flèche de TÉLÉVERSEMENT (blanche), en haut : l'ADN de l'application -->
+  <g fill="#ffffff">
+    <path d="M512 150 L648 300 L568 300 L568 392 L456 392 L456 300 L376 300 Z"/>
+  </g>
+
+  <!-- Écran / carte vidéo : la vidéo déposée -->
+  <rect x="196" y="446" width="632" height="366" rx="42" fill="url(#screen)"/>
+  <!-- Liseré intérieur discret -->
+  <rect x="232" y="482" width="560" height="294" rx="24" fill="#dbe2f4"/>
+  <!-- Triangle de lecture (bleu foncé, sur l'écran clair) -->
+  <path d="M414 556 L414 702 L542 629 Z" fill="#1E3A9E"/>
+
+  <!--
+    BADGE DE GESTION (nouveauté v3) : pastille orange au crayon.
+    Anneau blanc pour le détacher nettement du fond et de l'écran.
+  -->
+  <g transform="translate(790 790)">
+    <circle cx="0" cy="0" r="182" fill="#ffffff"/>
+    <circle cx="0" cy="0" r="158" fill="url(#badge)"/>
+    <!-- Crayon blanc incliné : symbole d'édition / gestion -->
+    <g transform="rotate(38)">
+      <!-- pointe -->
+      <path d="M-29 -52 L29 -52 L0 -114 Z" fill="#ffffff"/>
+      <!-- mine -->
+      <path d="M-11 -78 L11 -78 L0 -107 Z" fill="#7c3a06"/>
+      <!-- corps -->
+      <rect x="-29" y="-52" width="58" height="106" rx="9" fill="#ffffff"/>
+      <!-- bague / gomme -->
+      <rect x="-29" y="42" width="58" height="27" rx="9" fill="#fde68a"/>
+    </g>
+  </g>
+</svg>

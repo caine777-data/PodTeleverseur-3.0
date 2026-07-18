@@ -1,0 +1,6 @@
+customtkinter>=5.2.0
+requests>=2.31.0
+requests-toolbelt>=1.0.0
+keyring>=24.0.0
+tkinterdnd2>=0.4.0
+pillow>=10.0.0

@@ -1,0 +1,42 @@
+# version.txt - Metadonnees Windows de PodTeleverseur.exe
+# Reference dans la commande PyInstaller via --version-file version.txt
+# Visible dans : clic droit sur PodTeleverseur.exe -> Proprietes -> onglet Details
+# NB : fichier volontairement en ASCII pur (pas d'accents, d'apostrophes ni de
+# tirets longs) car il est evalue comme du Python par PyInstaller.
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    # filevers / prodvers : (majeur, mineur, patch, build) - a mettre a jour a chaque release
+    filevers=(3, 0, 0, 0),
+    prodvers=(3, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'040C04B0',  # Francais (France), Unicode
+          [
+            StringStruct(u'OriginalFilename', u'PodTeleverseur.exe'),
+            StringStruct(u'FileDescription',  u'Pod Televerseur - Depot de videos Esup-Pod'),
+            StringStruct(u'FileVersion',      u'3.0.0'),
+            StringStruct(u'ProductName',      u'Pod Televerseur'),
+            StringStruct(u'ProductVersion',   u'3.0.0'),
+            StringStruct(u'CompanyName',      u'Universite de Toulouse - MFCA'),
+            StringStruct(u'LegalCopyright',   u'(C) 2026 Cedric MONNA - Universite de Toulouse'),
+            StringStruct(u'Comments',
+                         u'Developpe par Cedric MONNA (support-pod@utoulouse.fr) '
+                         u'pour le service MFCA, Universite de Toulouse. '
+                         u'Usage interne - non redistribuable.'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [0x040C, 1200])])
+  ]
+)

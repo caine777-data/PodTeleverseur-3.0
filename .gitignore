@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+installer/
+icon.iconset/
+dmg_stage/
+
+# Secrets — NE JAMAIS committer
+.env
+*token*
+.pod_televerseur*
+scripts/.env
+
+# OS
+.DS_Store
+Thumbs.db
