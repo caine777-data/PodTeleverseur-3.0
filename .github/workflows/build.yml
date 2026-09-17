@@ -73,7 +73,7 @@ jobs:
           $iss = @"
           [Setup]
           AppName=Pod Televerseur
-          AppVersion=3.0.0
+          AppVersion=3.1.0
           AppPublisher=Universite de Toulouse
           DefaultDirName={localappdata}\Programs\PodTeleverseur
           DefaultGroupName=Pod Televerseur

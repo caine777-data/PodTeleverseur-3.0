@@ -132,3 +132,41 @@ python verifier_mes_videos.py
 
 *Développé par Cédric MONNA (support-pod@utoulouse.fr) — service MFCA,
 Université de Toulouse. Usage interne, non redistribuable.*
+
+---
+
+## Apparence — module partagé `theme.py`
+
+`theme.py` est **commun à PodAdmin, au Téléverseur v2 et au Téléverseur v3**.
+Les faire diverger reviendrait à corriger trois fois le même défaut — et à en
+oublier deux. Une correction de palette faite ici bénéficie aux trois outils.
+
+⚠️ **Toute couleur est un COUPLE `(clair, sombre)`.** Une teinte écrite seule
+s'applique telle quelle aux deux thèmes. L'application en comptait **124** avant
+le portage : chacune serait devenue illisible dès l'ouverture du mode clair.
+Un test l'interdit désormais.
+
+⚠️ **Le contraste se calcule, il ne s'apprécie pas à l'œil.** Toutes les teintes
+de texte atteignent 4,5:1 (WCAG 2.1 AA) sur l'ensemble de l'échelle de surfaces,
+dans les deux modes ; `theme.verifier_palette()` le contrôle et un test l'appelle.
+
+## Mode clair / sombre
+
+L'application était figée en mode sombre. Un bouton de bascule figure en pied de
+barre latérale, et le choix est **enregistré** : un enseignant qui préfère le
+mode clair ne doit pas le redemander à chaque dépôt. Sombre reste le défaut —
+c'était le seul mode avant la 3.1.
+
+## Tests
+
+Premiers tests de cette application (elle n'en avait aucun) :
+
+```bash
+python -m pytest tests/ -q
+```
+
+Ils couvrent la palette, la bascule de thème, la structure des onglets et
+l'absence de superposition de widgets. ⚠️ Pour ce dernier point, **ne pas
+filtrer sur `winfo_class()`** : il renvoie « Frame » pour tous les widgets
+CustomTkinter, `CTkOptionMenu` compris — un filtre sur cette base ne compare
+plus rien et laisse passer le défaut qu'il devait détecter.

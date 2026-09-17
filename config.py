@@ -15,7 +15,7 @@ from __future__ import annotations
 __author__      = "Cédric MONNA, Philippe BAQUÉ, Michel JACOB"
 __contact__     = "support-pod@utoulouse.fr"
 __institution__ = "Université de Toulouse"
-__version__     = "3.0.0"
+__version__     = "3.1.0"
 __date__        = "2026"
 __license__     = "Usage interne — Université de Toulouse"
 
@@ -79,6 +79,29 @@ def load_config() -> dict:
         except Exception:
             pass
     return cfg
+
+
+def load_theme() -> str:
+    """Renvoie le mode d'apparence enregistré : « dark » ou « light ».
+
+    Sombre par défaut, qui était le seul mode avant la version 3.1 : un
+    utilisateur qui n'a jamais touché au réglage retrouve l'application telle
+    qu'il l'a connue."""
+    valeur = str(load_config().get("theme", "dark")).lower()
+    return valeur if valeur in ("dark", "light") else "dark"
+
+
+def save_theme(mode: str) -> None:
+    """Enregistre le mode d'apparence.
+
+    Silencieux en cas d'échec : ne pas pouvoir retenir une préférence
+    d'affichage ne doit jamais empêcher de travailler."""
+    try:
+        cfg = load_config()
+        cfg["theme"] = "light" if str(mode).lower() == "light" else "dark"
+        save_config(cfg)
+    except Exception:
+        pass
 
 
 def save_config(cfg: dict) -> None:
