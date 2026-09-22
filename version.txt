@@ -7,8 +7,8 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
     # filevers / prodvers : (majeur, mineur, patch, build) - a mettre a jour a chaque release
-    filevers=(3, 1, 0, 0),
-    prodvers=(3, 1, 0, 0),
+    filevers=(3, 2, 0, 0),
+    prodvers=(3, 2, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -24,9 +24,9 @@ VSVersionInfo(
           [
             StringStruct(u'OriginalFilename', u'PodTeleverseur.exe'),
             StringStruct(u'FileDescription',  u'Pod Televerseur - Depot de videos Esup-Pod'),
-            StringStruct(u'FileVersion',      u'3.1.0'),
+            StringStruct(u'FileVersion',      u'3.2.0'),
             StringStruct(u'ProductName',      u'Pod Televerseur'),
-            StringStruct(u'ProductVersion',   u'3.1.0'),
+            StringStruct(u'ProductVersion',   u'3.2.0'),
             StringStruct(u'CompanyName',      u'Universite de Toulouse - MFCA'),
             StringStruct(u'LegalCopyright',   u'(C) 2026 Cedric MONNA - Universite de Toulouse'),
             StringStruct(u'Comments',

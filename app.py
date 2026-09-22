@@ -22,7 +22,7 @@ from __future__ import annotations
 __author__      = "Cédric MONNA, Philippe BAQUÉ, Michel JACOB"
 __contact__     = "support-pod@utoulouse.fr"
 __institution__ = "Université de Toulouse"
-__version__     = "3.0.0"
+from __version__ import __version__   # source unique (voir __version__.py)
 __date__        = "2026"
 __license__     = "Usage interne — Université de Toulouse"
 
@@ -36,6 +36,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 import config as cfg
+import maj                     # vérification de mise à jour (dépôt public)
 # Apparence et messages PARTAGÉS avec PodAdmin et le Téléverseur v2.
 #
 # L'import est global (`*`) à dessein : les constantes de palette sont
@@ -70,6 +71,12 @@ except Exception:
 
 APP_TITLE = "Pod Téléverseur — Université de Toulouse"
 APP_VERSION = __version__
+
+# Texte de la fenêtre de mise à jour OBLIGATOIRE. Volontairement neutre : il
+# ne donne jamais la raison du blocage (voir `_bloquer_demarrage`).
+MESSAGE_BLOCAGE = ("Une nouvelle version de Pod Téléverseur est nécessaire "
+                   "pour continuer. Téléchargez-la et installez-la.")
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -167,8 +174,28 @@ class App(_AppBase):
         self._post_connect_ok = None    # appelé après une connexion réussie
         self._post_connect_err = None   # appelé après un échec de connexion
 
+        # Bandeau « nouvelle version » : AUCUN widget créé ici. Un conteneur
+        # vide réservé d'avance se dessinait en CARRÉ NOIR sur macOS.
+        self.maj_bandeau = None
+
         self._build_ui()
         self._show_tab("upload")
+
+        # ⚠️ CONTRÔLE LOCAL DU BLOCAGE, EN TOUT PREMIER — avant l'auto-connexion
+        # et avant l'assistant : un blocage déjà confirmé par le serveur doit
+        # s'appliquer SANS ATTENDRE le réseau, sinon la personne pourrait
+        # interagir avec l'application pendant la vérification.
+        blocage_local = cfg.blocage_local_actif(APP_VERSION)
+        if blocage_local:
+            self._bloquer_demarrage({
+                "version": blocage_local["version"],
+                "url": blocage_local["url"],
+                "notes": blocage_local["notes"],
+                "urgent": True,
+                "obligatoire": True,
+            })
+            self.after(2000, self._verifier_maj)
+            return
 
         # Démarrage :
         #   • token déjà enregistré → reconnexion automatique silencieuse ;
@@ -178,6 +205,10 @@ class App(_AppBase):
             self._run(self._auto_connect)
         elif not self.token:
             self.after(300, self._first_run_wizard)
+
+        # Vérification de mise à jour, DIFFÉRÉE et en arrière-plan : elle ne
+        # doit jamais retarder l'ouverture de la fenêtre.
+        self.after(2000, self._verifier_maj)
 
     # ── Threading helpers ────────────────────────────────────────────────
 
@@ -2561,6 +2592,292 @@ class App(_AppBase):
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
         self._log("Application démarrée.")
+
+    def _verifier_maj(self):
+        """Lance la vérification de mise à jour en ARRIÈRE-PLAN.
+
+        Appelée peu après le démarrage. Tout se passe dans un thread : si le
+        réseau est absent ou le serveur injoignable, l'application n'attend rien
+        et l'utilisateur ne voit rien."""
+        def travail():
+            """(Thread) Interroge le fichier de version publié."""
+            def tracer(message):
+                """Consigne un échec de vérification dans le Journal.
+
+                Sans cette trace, une panne était indétectable : la vérification
+                échouait en silence et l'utilisateur ne voyait simplement jamais
+                de bandeau, sans pouvoir en connaître la raison."""
+                self._ui(self._log, f"ℹ Mise à jour — {message}")
+
+            # Un SEUL appel réseau, réutilisé pour les deux besoins : comparer
+            # les versions, et distinguer "vérification impossible" de "à jour
+            # confirmé" (voir plus bas) — sans quoi il aurait fallu interroger
+            # le serveur deux fois à chaque démarrage.
+            try:
+                donnees = maj.recuperer_info(
+                    getattr(cfg, "UPDATE_URL", ""),
+                    getattr(cfg, "UPDATE_TIMEOUT_S", 5),
+                    journal=tracer)
+            except Exception as e:
+                donnees = None
+                self._ui(self._log, f"ℹ Mise à jour — vérification interrompue : {e}")
+
+            try:
+                info = maj.etat_mise_a_jour(
+                    APP_VERSION,
+                    getattr(cfg, "UPDATE_URL", ""),
+                    getattr(cfg, "UPDATE_TIMEOUT_S", 5),
+                    journal=tracer, infos=donnees)
+            except Exception as e:
+                info = None              # jamais bloquant
+                self._ui(self._log, f"ℹ Mise à jour — vérification interrompue : {e}")
+
+            if info and info.get("obligatoire"):
+                # Blocage : PAS de bandeau, une fenêtre modale à la place.
+                # Réservé aux cas où continuer serait dangereux — voir maj.py.
+                #
+                # ⚠️ On MÉMORISE ce blocage localement (voir config.py) : le
+                # serveur vient de répondre, en direct, que cette version est
+                # bloquée. Ce fait doit désormais tenir MÊME SANS RÉSEAU, pour
+                # empêcher qu'une personne notifiée une fois contourne le
+                # blocage en coupant simplement sa connexion ensuite.
+                cfg.enregistrer_blocage_confirme(
+                    APP_VERSION, info.get("version", ""),
+                    info.get("url", ""), info.get("notes", ""))
+                self._ui(self._bloquer_demarrage, info)
+            elif info:
+                self._ui(self._afficher_bandeau_maj, info)
+            else:
+                # `info` est None ici pour DEUX raisons possibles : vérification
+                # impossible (réseau coupé, `donnees` est None) OU version
+                # confirmée à jour (`donnees` contient une réponse valide). On
+                # ne lève le verrou local QUE dans le second cas : lever un
+                # verrou parce que le réseau était simplement absent romprait
+                # tout le principe du blocage local.
+                if donnees and donnees.get("version"):
+                    cfg.lever_blocage_local()
+                    self._ui(self._log,
+                             f"ℹ Mise à jour — version {APP_VERSION} : aucune "
+                             f"plus récente.")
+                else:
+                    self._ui(self._log,
+                             "ℹ Mise à jour — vérification impossible "
+                             "(réseau indisponible) ; le verrou local, s'il "
+                             "existe, n'est pas modifié.")
+        self._run(travail)
+
+    def _bloquer_demarrage(self, info: dict):
+        """Fenêtre modale, SANS échappatoire, en cas de mise à jour obligatoire.
+
+        ⚠️ Différence fondamentale avec `_afficher_bandeau_maj` : ici on ne
+        propose pas, on empêche. Réservé aux cas où continuer présenterait un
+        vrai risque technique (ex. le mot de passe du compte véhicule a changé
+        et un dépôt échouerait en abîmant des fichiers à moitié envoyés) —
+        jamais un usage de contrôle d'accès ou de licence : ce n'est ni prévu
+        ni fiable pour ça (l'utilisateur garde la main sur son poste et sur le
+        fichier `config.json`).
+
+        La fenêtre n'a PAS de bouton "Annuler" qui permettrait de revenir à
+        l'application normalement : le seul geste possible est de télécharger
+        la mise à jour, ou de QUITTER complètement l'application (bouton
+        dédié, et fermeture système normale — voir ⚠️ ci-dessous).
+
+        ⚠️ LEÇON D'UN INCIDENT RÉEL (à ne jamais reproduire) : une première
+        version de cette fenêtre appelait `win.focus_force()` en boucle
+        toutes les 400 ms, dans l'intention d'empêcher un simple Alt+Tab de
+        rendre la fenêtre principale utilisable en tâche de fond. En usage
+        réel sur Windows, cette boucle a empêché jusqu'à ALT+F4 de fonctionner
+        : la seule issue restante était de tuer le processus depuis le
+        gestionnaire de tâches. `grab_set()` SEUL suffit à empêcher toute
+        interaction avec le contenu de l'application pendant que la modale
+        est affichée — c'est son rôle documenté en Tkinter — sans jamais
+        interférer avec les raccourcis et contrôles du système
+        d'exploitation lui-même. Un blocage qui empêche même de FERMER
+        l'application est un risque plus grave que celui qu'il cherchait à
+        éviter : quelqu'un dans une situation urgente doit TOUJOURS pouvoir
+        au moins quitter proprement."""
+        try:
+            win = ctk.CTkToplevel(self)
+            win.title("Mise à jour requise")
+            # Centrée sur la fenêtre principale : ouverte en (0,0), elle
+            # passait inaperçue sur un grand écran, et l'appli semblait
+            # simplement figée. 260 px suffisent (mesuré : le bouton
+            # « Quitter » finit à 218 px).
+            largeur, hauteur = 440, 260
+            try:
+                self.update_idletasks()
+                x = self.winfo_rootx() + max(0, (self.winfo_width() - largeur) // 2)
+                y = self.winfo_rooty() + max(0, (self.winfo_height() - hauteur) // 2)
+                win.geometry(f"{largeur}x{hauteur}+{x}+{y}")
+            except Exception:
+                win.geometry(f"{largeur}x{hauteur}")
+            win.resizable(False, False)
+
+            # La croix de CETTE fenêtre modale ferme l'application ENTIÈRE
+            # (comme le bouton "Quitter" ci-dessous), plutôt que de ne rien
+            # faire : ne rien faire du tout laisserait quelqu'un sans AUCUNE
+            # réaction visible à son clic, ce qui est déroutant et n'apporte
+            # rien — le blocage empêche déjà toute utilisation normale.
+            win.protocol("WM_DELETE_WINDOW", self._quitter_depuis_blocage)
+
+            ctk.CTkLabel(win, text="⚠️  Mise à jour requise",
+                         font=ctk.CTkFont(size=17, weight="bold"),
+                         text_color=T_ERREUR).pack(pady=(24, 8))
+            # Message FIXE et NEUTRE : la fenêtre de blocage ne donne jamais
+            # la raison de la mise à jour obligatoire. Le champ `notes` de
+            # version.json (saisi dans le formulaire de publication) n'est
+            # volontairement PAS affiché ici — il reste réservé au bandeau
+            # de mise à jour ordinaire.
+            ctk.CTkLabel(win, text=MESSAGE_BLOCAGE, wraplength=380, justify="center",
+                         font=ctk.CTkFont(size=13)).pack(padx=24, pady=(0, 6))
+            ctk.CTkLabel(
+                win,
+                text=f"Version installée : {APP_VERSION}\n"
+                     f"Version requise : {info.get('version', '?')}",
+                text_color=T_SECONDAIRE, justify="center",
+                font=ctk.CTkFont(size=11)).pack(pady=(0, 16))
+
+            # ⚠️ Le bouton est TOUJOURS présent, jamais conditionnel à
+            # `info.get("url")`. Dans le circuit normal, le workflow renseigne
+            # toujours l'URL — mais un `version.json` corrompu, modifié à la
+            # main, ou un ancien verrou local sans URL enregistrée ne doivent
+            # JAMAIS produire une fenêtre bloquante sans la moindre issue :
+            # ce serait un blocage total, sans moyen d'agir. On retombe alors
+            # sur la page générique des Releases (config.UPDATE_FALLBACK_URL).
+            lien = info.get("url") or getattr(
+                cfg, "UPDATE_FALLBACK_URL",
+                "https://github.com/caine777-data/podteleverseur-releases/releases/latest")
+            ctk.CTkButton(
+                win, text="Télécharger la mise à jour", height=36,
+                fg_color=C_ACTION, hover_color=C_ACTION_SURV,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                command=lambda u=lien: self._ouvrir_lien_maj(u)
+                ).pack(fill="x", padx=32, pady=(0, 8))
+
+            # Issue TOUJOURS disponible : quitter proprement. Un blocage qui
+            # empêcherait même de fermer l'application serait plus dangereux
+            # que le risque qu'il cherche à prévenir (voir la note ⚠️ plus haut).
+            ctk.CTkButton(
+                win, text="Quitter", height=30,
+                fg_color="transparent", text_color=T_SECONDAIRE,
+                hover_color=("gray85", "gray25"),
+                font=ctk.CTkFont(size=12),
+                command=self._quitter_depuis_blocage
+                ).pack(fill="x", padx=32, pady=(0, 4))
+
+            # Mise au premier plan UNE SEULE FOIS, via le helper commun à
+            # toutes les fenêtres secondaires de l'appli : `-topmost` retiré
+            # après 150 ms, focus donné une fois, puis `grab_set` (qui empêche
+            # d'utiliser le contenu de l'application). Sans cette mise au
+            # premier plan, la fenêtre pouvait s'ouvrir DERRIÈRE la fenêtre
+            # principale : l'appli paraissait figée, sans message visible.
+            # ⚠️ Jamais de boucle qui reprend le focus : voir la leçon
+            # documentée ci-dessus (ALT+F4 rendu inopérant).
+            _focus_toplevel(win, self)
+
+            self._log(f"⚠️ Mise à jour obligatoire : version {APP_VERSION} "
+                      f"bloquée (minimum requis : {info.get('version', '?')}).")
+        except Exception as e:
+            # Un échec de CONSTRUCTION de la fenêtre ne doit jamais planter
+            # l'application ni, à l'inverse, la laisser silencieusement
+            # utilisable sans que personne ne le sache : on trace fort.
+            self._log(f"❌ Impossible d'afficher le blocage de mise à jour "
+                      f"obligatoire : {e}")
+
+    def _afficher_bandeau_maj(self, info: dict):
+        """Affiche le bandeau annonçant une nouvelle version.
+
+        Volontairement NON bloquant, même quand la version installée est
+        périmée : le ton se durcit (couleur, libellé), mais l'application reste
+        pleinement utilisable. Empêcher quelqu'un de travailler à un mauvais
+        moment coûterait plus cher que le retard de mise à jour."""
+        urgent = bool(info.get("urgent"))
+        # Couples (clair, sombre) de la palette partagée, et non des teintes
+        # écrites seules : elles s'appliqueraient telles quelles aux deux
+        # thèmes. Le test de palette ne les verrait d'ailleurs pas, puisqu'elles
+        # transitent par une variable plutôt que par un paramètre `*_color`.
+        couleur = C_ALERTE if urgent else C_ACTION
+        # Texte blanc sur fond coloré : le fond étant le même dans les deux
+        # modes, le blanc aussi. Écrit en couple pour respecter la règle — une
+        # teinte seule ferait échouer le test de palette, à juste titre.
+        blanc = ("#ffffff", "#ffffff")
+        survol = ("#e5e7eb", "#e5e7eb")
+        titre = ("⚠️  Version obsolète" if urgent
+                 else f"⬆️  Version {info['version']} disponible")
+
+        # Un éventuel bandeau précédent est retiré avant d'en poser un nouveau.
+        if self.maj_bandeau is not None:
+            try:
+                self.maj_bandeau.destroy()
+            except Exception:
+                pass
+            self.maj_bandeau = None
+
+        # Le bandeau est créé DIRECTEMENT dans la barre latérale, sans cadre
+        # conteneur : c'est ce conteneur transparent qui apparaissait en carré
+        # noir sur macOS.
+        cadre = ctk.CTkFrame(self.sidebar, fg_color=couleur, corner_radius=6)
+        cadre.pack(side="bottom", fill="x", padx=8, pady=(0, 2))
+        self.maj_bandeau = cadre
+        ctk.CTkLabel(cadre, text=titre, font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=blanc, wraplength=190,
+                     justify="left").pack(anchor="w", padx=8, pady=(6, 2))
+        if urgent:
+            ctk.CTkLabel(cadre,
+                         text=f"La version {info['version']} corrige un point important. "
+                              "Mettez à jour dès que possible.",
+                         font=ctk.CTkFont(size=10), text_color=blanc,
+                         wraplength=190, justify="left").pack(anchor="w", padx=8)
+        elif info.get("notes"):
+            ctk.CTkLabel(cadre, text=info["notes"], font=ctk.CTkFont(size=10),
+                         text_color=blanc, wraplength=190,
+                         justify="left").pack(anchor="w", padx=8)
+        if info.get("url"):
+            # Bouton clair sur fond coloré. Les couleurs sont données en
+            # hexadécimal plutôt que par leur nom : les noms symboliques
+            # (« white », « gray90 ») ne sont pas rendus de la même façon
+            # partout, et macOS s'en accommode mal.
+            ctk.CTkButton(cadre, text="Télécharger", height=26,
+                          fg_color=blanc, text_color=couleur,
+                          hover_color=survol,
+                          font=ctk.CTkFont(size=11, weight="bold"),
+                          command=lambda u=info["url"]: self._ouvrir_lien_maj(u)
+                          ).pack(fill="x", padx=8, pady=(6, 8))
+        else:
+            # Simple marge basse. On ajuste l'espacement du dernier libellé
+            # plutôt que d'ajouter un widget vide, qui pouvait laisser une
+            # trace visible sur certains systèmes.
+            cadre.configure(height=0)      # laisse le contenu fixer la hauteur
+        self._log(f"⬆️ Version {info['version']} disponible"
+                  + (" (mise à jour recommandée sans délai)." if urgent else "."))
+
+    def _ouvrir_lien_maj(self, url: str):
+        """Ouvre la page de téléchargement de la nouvelle version."""
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            self._log("Page de téléchargement ouverte.")
+        except Exception as e:
+            self._log(f"❌ Ouverture du lien de mise à jour : {e}")
+
+    def _quitter_depuis_blocage(self):
+        """Ferme l'application ENTIÈRE depuis la fenêtre de blocage obligatoire.
+
+        Le blocage empêche d'UTILISER l'application, jamais de la FERMER :
+        c'est le seul geste toujours garanti, quoi qu'il arrive par ailleurs
+        (réseau, serveur, formulaire de publication mal rempli). Voir la note
+        d'incident dans `_bloquer_demarrage`.
+
+        `self.destroy()` sur la fenêtre RACINE ferme aussi ses enfants
+        (dont cette modale) — pas besoin de les détruire un par un."""
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        try:
+            self.quit()          # ceinture et bretelles : sort de mainloop()
+        except Exception:
+            pass
 
     def _signaler(self, widget, e: Exception, contexte: str = ""):
         """Affiche une erreur COMPRÉHENSIBLE et journalise le DÉTAIL technique.

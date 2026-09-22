@@ -15,7 +15,7 @@ from __future__ import annotations
 __author__      = "Cédric MONNA, Philippe BAQUÉ, Michel JACOB"
 __contact__     = "support-pod@utoulouse.fr"
 __institution__ = "Université de Toulouse"
-__version__     = "3.1.0"
+from __version__ import __version__   # source unique (voir __version__.py)
 __date__        = "2026"
 __license__     = "Usage interne — Université de Toulouse"
 
@@ -79,6 +79,93 @@ def load_config() -> dict:
         except Exception:
             pass
     return cfg
+
+
+# ── Mise à jour OBLIGATOIRE : mémorisation locale du blocage confirmé ──────
+#
+# Principe retenu (« modèle 1 durci », choisi après discussion sur les
+# risques d'un blocage qui dépendrait d'une disponibilité réseau
+# permanente) :
+#
+#   1. Tant que le serveur n'a jamais confirmé l'obligation pour CETTE
+#      version installée, l'application démarre normalement — un réseau
+#      coupé, un dépôt GitHub injoignable ou un token expiré ne doivent
+#      JAMAIS empêcher tout le monde de travailler.
+#   2. Le jour où le serveur RÉPOND et confirme l'obligation pour la
+#      version installée, ce fait est enregistré ICI, localement. Aux
+#      lancements suivants, le blocage s'applique MÊME SANS RÉSEAU : on
+#      empêche ainsi qu'une personne notifiée une fois contourne le
+#      blocage en coupant simplement sa connexion ensuite.
+#   3. Le verrou local ne vaut QUE pour la version qui l'a déclenché : dès
+#      que l'application est mise à jour vers une version qui n'est plus
+#      concernée, elle redémarre normalement sans avoir besoin du réseau
+#      pour "prouver" qu'elle est à jour.
+#
+# Ce mécanisme protège contre un contournement volontaire une fois notifié ;
+# il ne transforme jamais une panne réseau générale en arrêt total du
+# service pour des postes qui n'ont jamais été notifiés.
+
+def enregistrer_blocage_confirme(version_bloquee: str, version_minimale: str,
+                                 url: str = "", notes: str = "") -> None:
+    """Mémorise qu'un blocage a été confirmé par le serveur pour cette version.
+
+    `url` et `notes` sont conservées pour que la fenêtre bloquante rejouée
+    HORS LIGNE (voir `blocage_local_actif`) garde son lien de téléchargement
+    et son message — sans elles, un lancement sans réseau afficherait un
+    blocage muet, sans moyen d'agir.
+
+    Appelée uniquement après une réponse RÉSEAU RÉELLE et positive du
+    serveur (voir `maj.etat_mise_a_jour`) — jamais de manière spéculative."""
+    try:
+        cfg = load_config()
+        cfg["maj_obligatoire_version"] = str(version_bloquee)
+        cfg["maj_obligatoire_minimale"] = str(version_minimale)
+        cfg["maj_obligatoire_url"] = str(url or "")
+        cfg["maj_obligatoire_notes"] = str(notes or "")
+        save_config(cfg)
+    except Exception:
+        pass          # ne jamais lever depuis un enregistrement de confort
+
+
+def blocage_local_actif(version_actuelle: str) -> dict | None:
+    """Renvoie les infos du blocage mémorisé SI il s'applique encore à la
+    version actuellement lancée (dict avec version/url/notes), sinon None.
+
+    Ne s'applique que si `version_actuelle` correspond exactement à la
+    version qui avait été bloquée : une mise à jour vers une version plus
+    récente lève le verrou local automatiquement, sans avoir besoin du
+    réseau pour le constater."""
+    try:
+        cfg = load_config()
+        bloquee = str(cfg.get("maj_obligatoire_version", "") or "")
+        if bloquee and bloquee == str(version_actuelle):
+            minimale = str(cfg.get("maj_obligatoire_minimale", "") or "")
+            if minimale:
+                return {
+                    "version": minimale,
+                    "url": str(cfg.get("maj_obligatoire_url", "") or ""),
+                    "notes": str(cfg.get("maj_obligatoire_notes", "") or ""),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def lever_blocage_local() -> None:
+    """Efface le verrou local (utilisé quand une version plus récente est
+    détectée : le blocage n'a plus lieu d'être, autant nettoyer le fichier)."""
+    try:
+        cfg = load_config()
+        cfg.pop("maj_obligatoire_version", None)
+        cfg.pop("maj_obligatoire_minimale", None)
+        cfg.pop("maj_obligatoire_url", None)
+        cfg.pop("maj_obligatoire_notes", None)
+        save_config(cfg)
+    except Exception:
+        pass
+
+
+# ── Token : coffre-fort de l'OS si possible, sinon fichier local ──────────
 
 
 def load_theme() -> str:
@@ -184,3 +271,29 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
     ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".mts",
 }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  MISE À JOUR
+# ════════════════════════════════════════════════════════════════════════════
+# Fichier consulté au démarrage pour savoir si une version plus récente existe.
+#
+# Il est hébergé sur un dépôt PUBLIC distinct (podteleverseur-releases), et non
+# sur le dépôt du code, qui est privé : un enseignant n'a évidemment pas accès
+# à ce dernier, et la page de téléchargement doit lui rester accessible sans
+# compte GitHub.
+#
+# Le workflow de compilation réécrit ce fichier à chaque publication : il n'y a
+# rien à modifier à la main.
+UPDATE_URL = ("https://raw.githubusercontent.com/"
+              "caine777-data/podteleverseur-releases/main/version.json")
+
+# Page de secours si jamais un `version.json` (ou un verrou local ancien)
+# n'a pas d'URL renseignée. Sans cela, une fenêtre de blocage OBLIGATOIRE se
+# retrouverait sans AUCUN moyen d'agir — un blocage total sans issue, ce
+# qu'aucune configuration ne doit jamais produire.
+UPDATE_FALLBACK_URL = "https://github.com/caine777-data/podteleverseur-releases/releases/latest"
+
+# Délai maximal accordé à la vérification. Volontairement court : elle ne doit
+# JAMAIS retarder le démarrage, ni l'empêcher si le réseau est lent ou coupé.
+UPDATE_TIMEOUT_S = 5

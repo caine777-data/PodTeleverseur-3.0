@@ -170,3 +170,37 @@ l'absence de superposition de widgets. ⚠️ Pour ce dernier point, **ne pas
 filtrer sur `winfo_class()`** : il renvoie « Frame » pour tous les widgets
 CustomTkinter, `CTkOptionMenu` compris — un filtre sur cette base ne compare
 plus rien et laisse passer le défaut qu'il devait détecter.
+
+
+---
+
+## Mises à jour (depuis la 3.2.0)
+
+Même dispositif que Pod Téléverseur v2, pour que cette version puisse le
+remplacer sans changer les habitudes :
+
+- **Bandeau** en pied de barre latérale quand une version plus récente existe.
+- **Mise à jour obligatoire** (`obligatoire: true` dans `version.json`) : une
+  fenêtre modale empêche d'utiliser l'application. Message fixe et neutre
+  (`MESSAGE_BLOCAGE`), sans raison ; deux issues seulement — télécharger ou
+  quitter (la croix et Alt+F4 quittent aussi).
+- **Verrou local** : un blocage confirmé par le serveur reste actif même sans
+  réseau, pour qu'on ne puisse pas le contourner en coupant la connexion. Il ne
+  vaut que pour la version qui l'a déclenché.
+
+⚠️ **La version n'est définie qu'à UN endroit : `__version__.py`.** À la
+reprise de cette v3, `app.py` annonçait 3.0.0 et `config.py` 3.1.0 — c'est
+`app.py` qui fait foi, l'application se serait donc crue en retard en
+permanence. `version.txt` doit concorder : un test le vérifie.
+
+La mise en place (dépôt public, jeton, secret) et la procédure de publication
+obligatoire sont décrites dans **`MISE_EN_PLACE_MISES_A_JOUR.md`**.
+
+## Onglet « Mes vidéos »
+
+N'affiche **que** les vidéos du propriétaire sélectionné. Le filtrage est
+demandé au serveur (paramètre `owner`) **et refait systématiquement côté
+client** : si l'instance ignorait ce paramètre, elle renverrait toutes les
+vidéos de la plateforme. ⚠️ Ne jamais supprimer le filtre client
+(`TestFiltreProprietaire`). Être co-propriétaire ne suffit pas : seul le
+propriétaire principal compte.

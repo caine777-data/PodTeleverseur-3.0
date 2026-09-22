@@ -191,3 +191,79 @@ class TestMessagesDErreur:
         source = inspect.getsource(module_app.App._signaler)
         assert "self._log(" in source, "le détail n'est pas journalisé"
         assert "body" in source, "le corps de la réponse n'est pas journalisé"
+
+
+class TestFiltreProprietaire:
+    """« Mes vidéos » ne doit afficher QUE les vidéos du propriétaire choisi.
+
+    Le filtrage est fait deux fois : côté serveur (paramètre `owner`, si
+    l'instance l'honore) et TOUJOURS côté client. Ces tests portent sur le
+    filtre client, le seul qui soit garanti."""
+
+    class _Filtre:
+        """Objet minimal : ces deux méthodes ne dépendent pas de l'interface."""
+        def __init__(self):
+            import app as module_app
+            self._video_owner_id = module_app.App._video_owner_id.__get__(self)
+            self._video_belongs_to = module_app.App._video_belongs_to.__get__(self)
+
+    BASE = "https://exemple.invalid/rest"
+
+    def _ids(self):
+        return {f"{self.BASE}/users/42/", "42", "marie"}
+
+    def test_formats_acceptes_du_champ_owner(self):
+        """L'API renvoie `owner` sous plusieurs formes selon les endpoints."""
+        f, ids = self._Filtre(), self._ids()
+        for cas in ({"owner": f"{self.BASE}/users/42/"},
+                    {"owner": f"{self.BASE}/users/42"},        # sans barre finale
+                    {"owner": {"url": f"{self.BASE}/users/42/"}},  # imbriqué
+                    {"owner": "marie"},
+                    {"owner": 42}):
+            assert f._video_belongs_to(cas, ids), f"non reconnu : {cas}"
+
+    def test_un_autre_proprietaire_est_exclu(self):
+        f, ids = self._Filtre(), self._ids()
+        assert not f._video_belongs_to({"owner": f"{self.BASE}/users/7/"}, ids)
+
+    def test_piege_de_l_identifiant_contenu_dans_un_autre(self):
+        """⚠️ L'utilisateur 142 ne doit jamais être pris pour le 42 : une
+        comparaison par « se termine par » ou par sous-chaîne les
+        confondrait."""
+        f, ids = self._Filtre(), self._ids()
+        assert not f._video_belongs_to({"owner": f"{self.BASE}/users/142/"}, ids)
+
+    def test_proprietaire_additionnel_exclu(self):
+        """Être co-propriétaire ne fait pas entrer la vidéo dans « Mes
+        vidéos » : seul le propriétaire principal compte."""
+        f, ids = self._Filtre(), self._ids()
+        assert not f._video_belongs_to(
+            {"owner": f"{self.BASE}/users/7/",
+             "additional_owners": [f"{self.BASE}/users/42/"]}, ids)
+
+    def test_owner_absent_ou_vide(self):
+        """Sans propriétaire identifiable, on n'affiche PAS : en cas de doute,
+        ne rien montrer vaut mieux que montrer la vidéo de quelqu'un d'autre."""
+        f, ids = self._Filtre(), self._ids()
+        assert not f._video_belongs_to({}, ids)
+        assert not f._video_belongs_to({"owner": ""}, ids)
+
+    def test_le_filtre_client_est_toujours_applique(self):
+        """Garde-fou : le filtre serveur ne doit jamais être considéré comme
+        suffisant — si l'instance ignore le paramètre, elle renvoie TOUTES
+        les vidéos de la plateforme.
+
+        ⚠️ On analyse le CODE avec `ast`, pas le texte : la docstring de la
+        méthode cite « _video_belongs_to » pour expliquer la stratégie, et une
+        simple recherche de sous-chaîne restait verte même après suppression
+        de l'appel réel (vérifié par mutation)."""
+        import ast
+        import inspect
+
+        import app as module_app
+        arbre = ast.parse(inspect.getsource(module_app.App._do_myvids_load).strip())
+        appels = {n.func.attr for n in ast.walk(arbre)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        assert "_video_belongs_to" in appels, (
+            "le filtre client a disparu : une instance qui ignore le "
+            "paramètre `owner` afficherait les vidéos de tout le monde")

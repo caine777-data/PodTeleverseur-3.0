@@ -1,12 +1,12 @@
 name: Build installers
 
-# Compile Pod Téléverseur et fabrique TOUS les livrables en un seul run :
-#   Windows :
-#     • PodTeleverseur.exe          — exécutable portable (aucune installation)
-#     • PodTeleverseur-Setup.exe    — installeur Inno Setup (menu Démarrer + désinstalleur)
-#   macOS :
-#     • PodTeleverseur.dmg          — image disque (glisser dans Applications)
-#     • PodTeleverseur-macOS.zip    — archive .app (compatibilité)
+# Compile Pod Téléverseur et publie les livrables D'INSTALLATION SEULEMENT
+# (plus de version portable) :
+#   • PodTeleverseur-Windows-Setup.exe — installeur Inno Setup
+#   • PodTeleverseur-macOS.dmg         — image disque
+#
+# Chaque nom de fichier PUBLIÉ porte son OS, pour qu'une personne qui
+# télécharge depuis la page de Release ne puisse pas se tromper.
 #
 # Déclencheurs :
 #   • Bouton « Run workflow » dans l'onglet Actions (build manuel)
@@ -20,6 +20,33 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Écrire OUI pour PUBLIER une version (le numéro est lu dans __version__.py). Laisser VIDE = compilation d'essai."
+        required: false
+        default: ""
+      notes:
+        description: "Phrase affichée dans le bandeau de mise à jour (facultatif)"
+        required: false
+        default: ""
+      obligatoire:
+        description: >-
+          Rendre cette mise à jour OBLIGATOIRE : les postes en version
+          antérieure afficheront une fenêtre bloquante (aucun bandeau) tant
+          qu'ils n'ont pas mis à jour. La fenêtre affiche un message neutre,
+          sans en donner la raison. Laisser décoché pour une publication
+          normale.
+        required: false
+        type: boolean
+        default: false
+      version_minimale:
+        description: >-
+          Version en dessous de laquelle l'application est considérée
+          périmée (ex. 2.5.0). Si "obligatoire" est coché et ce champ laissé
+          vide, la version publiée elle-même sert de seuil : TOUT poste non à
+          jour sera alors bloqué.
+        required: false
+        default: ""
 
 jobs:
   # ─────────────────────────────── WINDOWS ───────────────────────────────
@@ -55,11 +82,8 @@ jobs:
             --add-data "assets;assets" `
             app.py
 
-      - name: Publier l'exe portable Windows
-        uses: actions/upload-artifact@v4
-        with:
-          name: PodTeleverseur-Windows-portable
-          path: dist/PodTeleverseur.exe
+      # Le portable n'est plus publié : seul l'installeur figure dans la
+      # Release. L'exe reste produit ici, car Inno Setup l'embarque.
 
       # Installe Inno Setup (compilateur d'installeurs Windows) via Chocolatey.
       - name: Installer Inno Setup
@@ -106,11 +130,18 @@ jobs:
           Set-Content -Path "PodTeleverseur.iss" -Value $iss -Encoding UTF8
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "PodTeleverseur.iss"
 
+      # Renommé PENDANT la compilation : c'est le nom du FICHIER que verra
+      # la personne qui télécharge, pas le libellé de l'artefact GitHub.
+      - name: Renommer l'installeur avec le nom d'OS explicite
+        run: |
+          Rename-Item "installer\PodTeleverseur-Setup.exe" `
+            "PodTeleverseur-Windows-Setup.exe"
+
       - name: Publier l'installeur Windows
         uses: actions/upload-artifact@v4
         with:
           name: PodTeleverseur-Windows-Setup
-          path: installer/PodTeleverseur-Setup.exe
+          path: installer/PodTeleverseur-Windows-Setup.exe
 
   # ──────────────────────────────── macOS ────────────────────────────────
   build-macos:
@@ -152,16 +183,9 @@ jobs:
             --add-data "assets:assets" \
             app.py
 
-      - name: Compresser le .app (archive)
-        run: |
-          cd dist
-          zip -r PodTeleverseur-macOS.zip PodTeleverseur.app || zip -r PodTeleverseur-macOS.zip PodTeleverseur
-
-      - name: Publier l'archive macOS
-        uses: actions/upload-artifact@v4
-        with:
-          name: PodTeleverseur-macOS-zip
-          path: dist/PodTeleverseur-macOS.zip
+      # Le .zip de l'archive .app n'est plus fabriqué : il n'est plus publié.
+      # (Le jour où il reviendrait : utiliser `ditto`, pas `zip`, qui casse la
+      # signature et fait réapparaître « est endommagé ».)
 
       - name: Fabriquer le DMG (glisser-déposer vers Applications)
         run: |
@@ -171,24 +195,122 @@ jobs:
           hdiutil create -volname "Pod Televerseur" -srcfolder dmg_stage \
             -ov -format UDZO "dist/PodTeleverseur.dmg"
 
+      - name: Renommer le .dmg avec le nom d'OS explicite
+        run: mv dist/PodTeleverseur.dmg dist/PodTeleverseur-macOS.dmg
+
       - name: Publier le DMG macOS
         uses: actions/upload-artifact@v4
         with:
           name: PodTeleverseur-macOS-DMG
-          path: dist/PodTeleverseur.dmg
+          path: dist/PodTeleverseur-macOS.dmg
 
-  # ──────────────────── Release GitHub (si tag v*) ─────────────────────
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publication sur tag v*, OU sur « Run workflow » avec le champ version
+    # rempli. Champ vide = compilation d'essai, rien n'est publié.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
+    # Le jeton automatique de GitHub Actions est en LECTURE SEULE par défaut :
+    # sans cette autorisation, la création de la Release échoue en 403.
+    permissions:
+      contents: write
     steps:
+      # ORDRE IMPORTANT : le checkout d'abord, car il NETTOIE le dossier de
+      # travail. Placé après, il supprimerait les artefacts téléchargés.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
-      - name: Créer la release et joindre tous les livrables
+
+      # Le numéro vient du CODE (__version__.py), jamais du formulaire : sinon
+      # l'application pourrait s'annoncer dans une version et en afficher une
+      # autre, et signaler en permanence une mise à jour… vers elle-même.
+      - name: Déterminer le numéro de version (depuis le code)
+        id: v
+        shell: bash
+        run: |
+          NUM=$(grep -oE '__version__[[:space:]]*=[[:space:]]*"[^"]+"' __version__.py | grep -oE '"[^"]+"' | tr -d '"')
+          if [ -z "$NUM" ]; then
+            echo "::error::Impossible de lire la version dans __version__.py"
+            exit 1
+          fi
+          echo "num=$NUM" >> "$GITHUB_OUTPUT"
+          echo "Version publiée (lue dans le code) : $NUM"
+
+      # La Release est publiée sur le dépôt PUBLIC, et non sur ce dépôt privé :
+      # le bouton « Télécharger » du bandeau renvoie vers lui. Publier ici
+      # donnerait une page inaccessible (404) à tout enseignant.
+      #
+      # L'écriture se fait avec RELEASES_TOKEN : le jeton automatique de
+      # GitHub Actions n'a aucun droit en dehors de ce dépôt-ci.
+      - name: Créer la release sur le dépôt public
         uses: softprops/action-gh-release@v2
         with:
+          repository: ${{ vars.RELEASES_REPO || format('{0}/podteleverseur-releases', github.repository_owner) }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+          tag_name: v${{ steps.v.outputs.num }}
+          name: Pod Téléverseur v${{ steps.v.outputs.num }}
+          body: ${{ inputs.notes || 'Nouvelle version.' }}
+          # Uniquement les fichiers d'INSTALLATION : plus de version portable
+          # dans la Release. Chaque nom de fichier porte explicitement son OS,
+          # pour qu'une personne qui télécharge ne puisse pas se tromper.
           files: |
-            PodTeleverseur-Windows-Setup/PodTeleverseur-Setup.exe
-            PodTeleverseur-Windows-portable/PodTeleverseur.exe
-            PodTeleverseur-macOS-DMG/PodTeleverseur.dmg
-            PodTeleverseur-macOS-zip/PodTeleverseur-macOS.zip
+            PodTeleverseur-Windows-Setup/PodTeleverseur-Windows-Setup.exe
+            PodTeleverseur-macOS-DMG/PodTeleverseur-macOS.dmg
+
+      # ── Notification de mise à jour ────────────────────────────────────
+      # Écrit `version.json` sur le dépôt PUBLIC. C'est ce fichier que les
+      # applications installées consultent au démarrage.
+      #
+      # Sans le secret RELEASES_TOKEN, l'étape est IGNORÉE : la compilation se
+      # déroule normalement, seule la notification n'est pas publiée.
+      - name: Publier version.json sur le dépôt public
+        if: env.RELEASES_TOKEN != ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          DEPOT_PUBLIC: ${{ vars.RELEASES_REPO }}
+        run: |
+          set -e
+          VERSION="${{ steps.v.outputs.num }}"
+          DEPOT="${DEPOT_PUBLIC:-${GITHUB_REPOSITORY_OWNER}/podteleverseur-releases}"
+          NOTES="${{ inputs.notes }}"
+          [ -z "$NOTES" ] && NOTES="Nouvelle version disponible."
+
+          # ⚠️ CORRECTIF : ces deux champs du formulaire (workflow_dispatch,
+          # voir plus haut) n'étaient JUSQU'ICI jamais transmis au fichier
+          # final — "obligatoire" n'était même pas écrit, et
+          # "version_minimale" restait figé à "" quel que soit le formulaire.
+          # Un utilisateur cochant "obligatoire" publiait donc, sans le
+          # savoir, une mise à jour parfaitement NORMALE : aucun blocage ne
+          # pouvait jamais se produire.
+          OBLIGATOIRE="${{ inputs.obligatoire }}"
+          [ -z "$OBLIGATOIRE" ] && OBLIGATOIRE="false"
+
+          MINIMALE="${{ inputs.version_minimale }}"
+          # Règle documentée dans MISE_EN_PLACE_MISES_A_JOUR.md : si
+          # "obligatoire" est coché et qu'aucun seuil n'est précisé, la
+          # version publiée elle-même sert de seuil — TOUT poste non encore
+          # sur cette version est alors bloqué.
+          if [ "$OBLIGATOIRE" = "true" ] && [ -z "$MINIMALE" ]; then
+            MINIMALE="$VERSION"
+          fi
+
+          cat > version.json <<EOF
+          {
+            "version": "$VERSION",
+            "url": "https://github.com/$DEPOT/releases/latest",
+            "notes": "$NOTES",
+            "version_minimale": "$MINIMALE",
+            "obligatoire": $OBLIGATOIRE
+          }
+          EOF
+          echo "Contenu publié :" && cat version.json
+
+          git clone --depth 1 \
+            "https://x-access-token:${RELEASES_TOKEN}@github.com/${DEPOT}.git" public
+          cp version.json public/version.json
+          cd public
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add version.json
+          git diff --cached --quiet || git commit -m "Version $VERSION"
+          git push
