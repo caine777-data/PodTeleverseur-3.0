@@ -267,3 +267,61 @@ class TestFiltreProprietaire:
         assert "_video_belongs_to" in appels, (
             "le filtre client a disparu : une instance qui ignore le "
             "paramètre `owner` afficherait les vidéos de tout le monde")
+
+
+class TestFiltreServeurFacultatif:
+    """⚠️ INCIDENT RÉEL : sur videos.utoulouse.fr, le filtre `owner=<URL>` est
+    refusé par le serveur (« Sélectionnez un choix valide », HTTP 400). Le code
+    ne tentait que cette forme, et son échec faisait échouer TOUT le
+    chargement : l'onglet « Mes vidéos » restait vide, avec un message
+    d'erreur incompréhensible pour un enseignant.
+
+    Le filtre serveur n'est qu'une optimisation : son refus doit mener à une
+    lecture complète, re-filtrée côté client."""
+
+    BASE = "https://exemple.invalid/rest"
+
+    class _API:
+        def __init__(self, accepte=None):
+            self.accepte, self.appels = accepte, []
+
+        def get_all_videos(self, progress_cb=None, extra_params=None):
+            self.appels.append(extra_params)
+            if extra_params and extra_params != self.accepte:
+                raise Exception("HTTP 400 : owner : Sélectionnez un choix valide.")
+            b = TestFiltreServeurFacultatif.BASE
+            return [{"slug": "a", "owner": f"{b}/users/42/"},
+                    {"slug": "b", "owner": f"{b}/users/7/"}]
+
+    def _preparer(self, app, api):
+        app.api = api
+        url = f"{self.BASE}/users/42/"
+        app._myvids_current_owner = lambda: (url, "marie")
+        return url
+
+    def test_un_refus_du_serveur_ne_bloque_pas_le_chargement(self, app):
+        api = self._API(accepte=None)          # refuse TOUTES les formes
+        url = self._preparer(app, api)
+        videos = app._myvids_lire_videos(url, lambda n: None)
+        assert videos, "le refus du filtre serveur a empêché le chargement"
+        assert api.appels[-1] is None, (
+            "pas de repli sur une lecture complète après les refus")
+
+    def test_la_premiere_forme_acceptee_suffit(self, app):
+        """Pas de lecture complète inutile quand l'instance accepte un filtre."""
+        api = self._API(accepte={"owner": "42"})
+        url = self._preparer(app, api)
+        app._myvids_lire_videos(url, lambda n: None)
+        assert api.appels == [{"owner": "42"}]
+
+    def test_le_repli_reste_filtre_cote_client(self, app):
+        """Après une lecture complète, seules les vidéos du propriétaire
+        doivent subsister — le repli ne doit jamais tout afficher."""
+        import app as module_app
+        api = self._API(accepte=None)
+        url = self._preparer(app, api)
+        brut = app._myvids_lire_videos(url, lambda n: None)
+        ids = {url, "42", "marie"}
+        gardees = [v for v in brut
+                   if module_app.App._video_belongs_to(app, v, ids)]
+        assert [v["slug"] for v in gardees] == ["a"]

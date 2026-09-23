@@ -14,7 +14,7 @@ compilation la lit dans ce fichier. `version.txt` (métadonnées de l'exécutabl
 Windows) reste à mettre à jour à la main : un test vérifie la concordance.
 """
 
-__version__ = "3.2.0"
+__version__ = "3.2.1"
 
 # (majeur, mineur, correctif, build) pour les métadonnées Windows.
 VERSION_TUPLE = tuple(int(x) for x in __version__.split(".")) + (0,)

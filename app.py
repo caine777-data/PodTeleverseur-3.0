@@ -1274,9 +1274,8 @@ class App(_AppBase):
             def prog(n):
                 self._ui(self.myvids_status.configure,
                          text=f"⏳  {n} vidéos lues…", text_color="gray")
-            # 1) Tentative de filtre serveur (sans risque : re-filtré ensuite).
-            raw = self.api.get_all_videos(progress_cb=prog,
-                                          extra_params={"owner": owner_url})
+            # 1) Tentative de filtre serveur — PUREMENT FACULTATIVE.
+            raw = self._myvids_lire_videos(owner_url, prog)
             # 2) Filtre client : on ne garde que les vidéos du propriétaire.
             owner_ids = self._myvids_owner_ids()
             videos = [v for v in raw if self._video_belongs_to(v, owner_ids)]
@@ -1303,6 +1302,45 @@ class App(_AppBase):
                                 f"{self.config_data.get('agent_username','?')}.")
         except Exception as e:
             self._signaler(self.myvids_status, e, "Chargement « Mes vidéos »")
+
+    def _myvids_lire_videos(self, owner_url: str, prog):
+        """Lit les vidéos, en tentant d'abord un filtre côté serveur.
+
+        ⚠️ Le filtre serveur est une OPTIMISATION, jamais une condition de
+        succès. Le format attendu varie d'une instance à l'autre : sur
+        videos.utoulouse.fr, `owner=<URL>` est refusé avec « Sélectionnez un
+        choix valide » (HTTP 400). Le code ne tentait que cette forme, et son
+        échec faisait échouer tout le chargement : l'onglet n'affichait plus
+        aucune vidéo, avec un message d'erreur incompréhensible.
+
+        On essaie donc les formes connues l'une après l'autre (voir la sonde
+        `verifier_mes_videos.py`), puis on se rabat sur une lecture COMPLÈTE.
+        Dans tous les cas, l'appelant re-filtre côté client : le résultat
+        affiché est identique, seule la quantité de données lues change.
+        """
+        numero = str(owner_url).rstrip("/").split("/")[-1]
+        _, nom = self._myvids_current_owner()
+        variantes = []
+        if numero.isdigit():
+            variantes.append(("owner = id numérique", {"owner": numero}))
+        if owner_url:
+            variantes.append(("owner = URL complète", {"owner": owner_url}))
+        if nom:
+            variantes.append(("owner__username", {"owner__username": nom}))
+
+        for libelle, params in variantes:
+            try:
+                return self.api.get_all_videos(progress_cb=prog,
+                                               extra_params=params)
+            except Exception as e:
+                # Refus du serveur : on note et on essaie la forme suivante.
+                self._ui(self._log,
+                         f"Filtre serveur « {libelle} » refusé "
+                         f"({e.__class__.__name__}) — on essaie autrement.")
+
+        self._ui(self._log, "Aucun filtre serveur accepté : lecture complète "
+                            "du fonds, puis filtrage dans l'application.")
+        return self.api.get_all_videos(progress_cb=prog)
 
     def _myvids_refresh_channel_menu(self):
         """Remplit le filtre par chaîne avec les chaînes chargées."""

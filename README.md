@@ -204,3 +204,10 @@ client** : si l'instance ignorait ce paramètre, elle renverrait toutes les
 vidéos de la plateforme. ⚠️ Ne jamais supprimer le filtre client
 (`TestFiltreProprietaire`). Être co-propriétaire ne suffit pas : seul le
 propriétaire principal compte.
+
+⚠️ **Le filtre serveur est facultatif.** Le format accepté pour `owner` varie
+d'une instance à l'autre : sur videos.utoulouse.fr, `owner=<URL>` est refusé
+(« Sélectionnez un choix valide »). Une version antérieure ne tentait que cette
+forme, et son échec vidait tout l'onglet. L'application essaie désormais l'id
+numérique, l'URL, puis `owner__username`, et se rabat sur une lecture complète
+— toujours re-filtrée côté client (`TestFiltreServeurFacultatif`).
