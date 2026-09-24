@@ -651,6 +651,20 @@ class PodAPI:
     #              thème requiert title + channel (URL) ; thèmes hiérarchiques
     #              via parentId.
 
+    def get_disciplines(self) -> list[dict]:
+        """Liste les disciplines de l'instance (reprise de PodAdmin)."""
+        data = self._get("/discipline/", {"limit": 200})
+        return data.get("results", []) if isinstance(data, dict) else (data or [])
+
+    def set_disciplines(self, video, discipline_urls: list[str]) -> dict:
+        """Remplace les disciplines d'une vidéo (réf = dict, URL, id ou slug).
+
+        ⚠️ Relation MULTIPLE : on envoie une LISTE d'URLs, même pour une seule
+        discipline. Établi par sonde dans PodAdmin — une URL nue est refusée.
+        """
+        return self._patch(self._video_endpoint(video),
+                           json={"discipline": list(discipline_urls)})
+
     def get_themes(self) -> list[dict]:
         """Liste tous les THÈMES (sous-catégories de chaînes), paginé."""
         return self._paginate("/themes/", {"limit": 300})

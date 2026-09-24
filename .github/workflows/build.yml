@@ -94,10 +94,21 @@ jobs:
       # avec raccourcis menu Démarrer + Bureau et désinstalleur.
       - name: Fabriquer l'installeur (Inno Setup)
         run: |
+          # Version lue dans __version__.py : elle était écrite ici EN DUR
+          # (3.1.0) et restait fausse dans l'installeur et la liste des
+          # programmes Windows à chaque nouvelle version.
+          $ver = (Select-String -Path "__version__.py" -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $ver) { Write-Error "Version introuvable dans __version__.py"; exit 1 }
+          Write-Host "Version de l'installeur : $ver"
           $iss = @"
           [Setup]
+          ; ⚠️ MÊME AppId que le Pod Téléverseur v2 : c'est lui qui fait
+          ; reconnaître la v3 comme une MISE À JOUR de la v2 (remplacement sur
+          ; place). Sans lui, les deux coexisteraient dans la liste des
+          ; programmes. Ne jamais le modifier.
+          AppId={{8F3A6C21-4D7B-4E2A-9C15-7B2E5D9A1C04}}
           AppName=Pod Televerseur
-          AppVersion=3.1.0
+          AppVersion=$ver
           AppPublisher=Universite de Toulouse
           DefaultDirName={localappdata}\Programs\PodTeleverseur
           DefaultGroupName=Pod Televerseur

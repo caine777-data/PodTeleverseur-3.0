@@ -206,6 +206,8 @@ class TestFiltreProprietaire:
             import app as module_app
             self._video_owner_id = module_app.App._video_owner_id.__get__(self)
             self._video_belongs_to = module_app.App._video_belongs_to.__get__(self)
+            self._role_sur_video = module_app.App._role_sur_video.__get__(self)
+            self._correspond = module_app.App._correspond
 
     BASE = "https://exemple.invalid/rest"
 
@@ -233,11 +235,11 @@ class TestFiltreProprietaire:
         f, ids = self._Filtre(), self._ids()
         assert not f._video_belongs_to({"owner": f"{self.BASE}/users/142/"}, ids)
 
-    def test_proprietaire_additionnel_exclu(self):
-        """Être co-propriétaire ne fait pas entrer la vidéo dans « Mes
-        vidéos » : seul le propriétaire principal compte."""
+    def test_coproprietaire_inclus(self):
+        """Demande explicite : les vidéos dont le compte est CO-propriétaire
+        entrent aussi dans « Mes vidéos »."""
         f, ids = self._Filtre(), self._ids()
-        assert not f._video_belongs_to(
+        assert f._video_belongs_to(
             {"owner": f"{self.BASE}/users/7/",
              "additional_owners": [f"{self.BASE}/users/42/"]}, ids)
 
@@ -307,12 +309,15 @@ class TestFiltreServeurFacultatif:
         assert api.appels[-1] is None, (
             "pas de repli sur une lecture complète après les refus")
 
-    def test_la_premiere_forme_acceptee_suffit(self, app):
-        """Pas de lecture complète inutile quand l'instance accepte un filtre."""
+    def test_filtre_owner_seul_ne_suffit_plus(self, app):
+        """⚠️ `owner=` ne renvoie que les vidéos POSSÉDÉES. Si le filtre de
+        co-propriété est refusé, il faut une lecture complète — sinon les
+        vidéos partagées disparaîtraient de « Mes vidéos »."""
         api = self._API(accepte={"owner": "42"})
         url = self._preparer(app, api)
         app._myvids_lire_videos(url, lambda n: None)
-        assert api.appels == [{"owner": "42"}]
+        assert api.appels[0] == {"owner": "42"}
+        assert api.appels[-1] is None, "pas de lecture complète après le refus"
 
     def test_le_repli_reste_filtre_cote_client(self, app):
         """Après une lecture complète, seules les vidéos du propriétaire
@@ -325,3 +330,418 @@ class TestFiltreServeurFacultatif:
         gardees = [v for v in brut
                    if module_app.App._video_belongs_to(app, v, ids)]
         assert [v["slug"] for v in gardees] == ["a"]
+
+
+class TestDisciplineAuTeleversement:
+    """Étape 4 : discipline commune au lot, comme dans PodAdmin.
+
+    Classer au dépôt coûte un choix ; rattacher après coup coûte une reprise de
+    centaines de vidéos. Le champ reste FACULTATIF."""
+
+    def test_table_vide_annoncee_explicitement(self, app):
+        app.discipline_map = {}
+        app._rafraichir_menu_discipline()
+        assert app.upload_discipline.get() == app.AUCUNE_DISCIPLINE
+
+    def test_sans_discipline_ne_rattache_rien(self, app):
+        app.discipline_map = {"Physique": "https://x/discipline/2/"}
+        app._rafraichir_menu_discipline()
+        app.upload_discipline.set(app.SANS_DISCIPLINE)
+        assert app._discipline_choisie() == ""
+        app.upload_discipline.set("Physique")
+        assert app._discipline_choisie() == "https://x/discipline/2/"
+
+    def test_le_rattachement_se_fait_en_liste(self):
+        """⚠️ Relation MULTIPLE : une URL nue est refusée par l'API."""
+        import inspect
+
+        import pod_api
+        source = inspect.getsource(pod_api.PodAPI.set_disciplines)
+        assert '"discipline": list(discipline_urls)' in source
+
+    def test_un_echec_ne_perd_pas_la_video(self):
+        """La vidéo est déposée ; seul son classement manque."""
+        import inspect
+
+        import app as module_app
+        source = inspect.getsource(module_app.App._do_batch_upload)
+        bloc = source[source.index("set_disciplines") - 300:source.index("set_disciplines") + 300]
+        assert "except Exception" in bloc
+
+    def test_la_relance_transmet_la_discipline(self):
+        """Sans cela, une vidéo relancée après échec perdrait son classement."""
+        import inspect
+
+        import app as module_app
+        source = inspect.getsource(module_app.App._retry_failed)
+        assert "_last_discipline_url" in source
+
+    def test_discipline_a_cote_du_type(self, app):
+        """Même ligne que le Type — et surtout pas la ligne 2, colonnes 2-3,
+        déjà occupée par « Propriétaires additionnels »."""
+        info_d = app.upload_discipline.grid_info()
+        info_t = app.type_combo.grid_info()
+        assert int(info_d["row"]) == int(info_t["row"])
+
+
+import os as _os
+
+RACINE = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+os = _os
+
+
+class TestHierarchieDesCouleurs:
+    """Étape 5 : mêmes règles de couleur que PodAdmin.
+
+    • aucun bouton ni menu laissé dans le bleu par défaut de CustomTkinter ;
+    • un bouton gris porte un texte SOMBRE en mode clair — du blanc sur
+      C_NEUTRE donne 2,44:1, illisible ;
+    • aucune teinte seule (« gray », « #ef4444 ») : elle vaut pour les deux
+      modes, et plusieurs tombaient sous le seuil de lisibilité en clair."""
+
+    @staticmethod
+    def _appels():
+        import ast
+        source = open(os.path.join(RACINE, "app.py"), encoding="utf-8").read()
+        for n in ast.walk(ast.parse(source)):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                    and n.func.attr in ("CTkButton", "CTkOptionMenu", "CTkComboBox"):
+                kws = {k.arg: k for k in n.keywords}
+                yield n, kws, source
+
+    def test_aucun_element_dans_le_bleu_par_defaut(self):
+        import ast
+        fautifs = []
+        for n, kws, source in self._appels():
+            deplie = any(k.arg is None for k in n.keywords)      # **STYLE_…
+            if "fg_color" not in kws and not deplie:
+                fautifs.append((n.lineno, n.func.attr))
+        assert not fautifs, f"éléments dans le bleu par défaut : {fautifs}"
+
+    def test_bouton_gris_avec_texte_sombre(self):
+        import ast
+        fautifs = []
+        for n, kws, source in self._appels():
+            if n.func.attr != "CTkButton" or "fg_color" not in kws:
+                continue
+            if "C_NEUTRE" in ast.get_source_segment(source, kws["fg_color"].value) \
+                    and "text_color" not in kws:
+                fautifs.append(n.lineno)
+        assert not fautifs, f"boutons gris à texte blanc illisible, lignes {fautifs}"
+
+    def test_aucune_teinte_seule(self):
+        import re
+        source = open(os.path.join(RACINE, "app.py"), encoding="utf-8").read()
+        fautifs = re.findall(
+            r'text_color="(?:gray\d*|#[0-9a-fA-F]{6})"'
+            r'|_set_item_status\([^)\n]*"(?:gray\d*|#[0-9a-fA-F]{6})"\)', source)
+        assert not fautifs, f"teintes seules : {fautifs[:5]}"
+
+
+class TestAucunWidgetLuDepuisLeThreadDEnvoi:
+    """Lire un widget Tk depuis un thread de travail provoque des plantages
+    ALÉATOIRES (« main thread is not in main loop »). PodAdmin avait corrigé
+    ce défaut ; la v3 lisait encore la visibilité et la case d'encodage
+    depuis le thread d'envoi."""
+
+    def test_l_envoi_ne_lit_aucun_widget(self):
+        import ast
+        import inspect
+
+        import app as module_app
+        arbre = ast.parse(inspect.getsource(module_app.App._do_batch_upload).strip())
+        lectures = [n.lineno for n in ast.walk(arbre)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "get" and not n.args]
+        assert not lectures, f"lecture de widget dans le thread, lignes {lectures}"
+
+
+
+class TestCoProprieteDansMesVideos:
+    """Les vidéos en co-propriété entrent dans « Mes vidéos » ; seule la
+    suppression reste réservée au propriétaire (Pod la refuse sinon)."""
+
+    B = "https://exemple.invalid/rest"
+
+    @pytest.fixture(autouse=True)
+    def _restaurer(self, app):
+        """Instance PARTAGÉE : ce qu'on remplace ici doit être rendu, sinon un
+        test placé après hériterait d'un `_run` qui n'exécute plus rien."""
+        sauvegarde = {n: app.__dict__.get(n) for n in
+                      ("_myvids_current_owner", "_run", "_myvids_set_msg")}
+        yield
+        for nom, valeur in sauvegarde.items():
+            if valeur is None:
+                app.__dict__.pop(nom, None)
+            else:
+                app.__dict__[nom] = valeur
+
+    def _app(self, app):
+        app._myvids_current_owner = lambda: (f"{self.B}/users/42/", "marie")
+        return app
+
+    def test_identifiants_calcules_depuis_une_url_a_barre_finale(self, app):
+        """⚠️ Défaut réel : sur une URL finissant par « / », le numéro du
+        compte n'était jamais extrait, et une vidéo dont `owner` est l'URL —
+        la forme de l'API — n'était pas reconnue. Les tests précédents
+        fournissaient un ensemble tout fait et ne pouvaient pas le voir : ce
+        test passe par la VRAIE fonction."""
+        a = self._app(app)
+        ids = a._myvids_owner_ids()
+        assert "42" in ids
+        assert a._role_sur_video({"owner": f"{self.B}/users/42/"}, ids) == "proprietaire"
+
+    def test_role_coproprietaire(self, app):
+        a = self._app(app)
+        ids = a._myvids_owner_ids()
+        v = {"owner": f"{self.B}/users/7/", "additional_owners": [{"url": f"{self.B}/users/42/"}]}
+        assert a._role_sur_video(v, ids) == "coproprietaire"
+
+    def test_piege_142_en_copropriete(self, app):
+        a = self._app(app)
+        v = {"owner": f"{self.B}/users/7/", "additional_owners": [f"{self.B}/users/142/"]}
+        assert a._role_sur_video(v, a._myvids_owner_ids()) is None
+
+    def test_la_suppression_est_refusee_au_coproprietaire(self, app, monkeypatch):
+        """⚠️ La boîte de confirmation est REMPLACÉE : sans cela, un garde-fou
+        manquant ouvrait la vraie boîte, qui attendait un clic — la suite de
+        tests se figeait au lieu d'échouer (vu par mutation)."""
+        import app as module_app
+        a = self._app(app)
+        appels, confirmations = [], []
+        a._run = lambda *x, **k: appels.append(x)
+        a._myvids_set_msg = lambda *x, **k: None
+        monkeypatch.setattr(module_app.messagebox, "askyesno",
+                            lambda *x, **k: confirmations.append(x) or True)
+        v = {"slug": "s", "title": "T", "owner": f"{self.B}/users/7/",
+             "additional_owners": [f"{self.B}/users/42/"]}
+        a._myvids_delete(v)
+        assert not confirmations, "une confirmation de suppression a été demandée"
+        assert not appels, "la suppression a été lancée pour un co-propriétaire"
+
+
+class TestAide:
+    """L'aide doit décrire l'application telle qu'elle est.
+
+    Défauts trouvés à sa mise à jour : huit sauts de ligne écrits « \\\\n »,
+    donc affichés tels quels, et deux boutons cités qui n'existaient pas
+    (« Actualiser » pour « Rafraîchir », « Ouvrir sur le site » pour « Ouvrir
+    dans le navigateur »)."""
+
+    @staticmethod
+    def _sections():
+        source = open(os.path.join(RACINE, "app.py"), encoding="utf-8").read()
+        d = source.index("        sections = [")
+        f = source.index("        # Rendu automatique des sections")
+        return source, source[d:f]
+
+    def test_aucun_saut_de_ligne_affiche_en_clair(self):
+        _, bloc = self._sections()
+        assert "\\\\n" not in bloc, "l'aide affiche « \\\\n » au lieu d'aller à la ligne"
+
+    def test_les_boutons_cites_existent(self):
+        import re
+        source, bloc = self._sections()
+        reste = source.replace(bloc, "")
+        cites = ["🔄 Rafraîchir", "Ouvrir dans le navigateur",
+                 "Télécharger la mise à jour", "Supprimer cette vidéo", "Quitter"]
+        for nom in cites:
+            assert nom in bloc, f"l'aide ne cite plus « {nom} »"
+            mots = nom.replace("🔄 ", "")
+            assert re.search(r'text="[^"]*' + re.escape(mots), reste), (
+                f"l'aide cite « {nom} », mais aucun bouton ne porte ce texte")
+
+    def test_nouveautes_documentees(self):
+        _, bloc = self._sections()
+        for sujet in ("Discipline", "co-propriétaire", "OBLIGATOIRES", "Mode clair"):
+            assert sujet in bloc, f"l'aide ne mentionne pas : {sujet}"
+
+
+class TestAucuneExceptionBrute:
+    """Analyse syntaxique reprise de PodAdmin : l'ancien test de la v3 ne
+    cherchait qu'une forme et laissait passer les messages de « Mes vidéos »."""
+
+    def test_aucun_message_brut_ne_subsiste(self):
+        """Aucune exception insérée telle quelle dans un texte AFFICHÉ.
+
+        ⚠️ Quatre versions successives de ce test ont laissé passer des cas.
+        Les trois premières cherchaient des motifs textuels (« text=f… »,
+        « ❌ … », puis une fenêtre de lignes autour de la chaîne) : chacune
+        ratait une forme, la dernière parce qu'un appel au Journal situé
+        juste au-dessus « couvrait » l'affichage qui le suivait.
+
+        On analyse donc l'ARBRE SYNTAXIQUE : pour chaque chaîne formatée
+        contenant une exception (e, exc, err), on remonte à l'instruction qui
+        la contient réellement. Seules sont autorisées les destinations non
+        affichées : le Journal (`_log`), un attribut `.error` gardé en
+        mémoire, une variable de travail, ou une exception relancée."""
+        import ast
+
+        source = open(os.path.join(RACINE, "app.py"), encoding="utf-8").read()
+        arbre = ast.parse(source)
+        parents = {}
+        for noeud in ast.walk(arbre):
+            for enfant in ast.iter_child_nodes(noeud):
+                parents[enfant] = noeud
+
+        def contient_exception(js):
+            for v in ast.walk(js):
+                if isinstance(v, ast.FormattedValue) and isinstance(v.value, ast.Name) \
+                        and v.value.id in ("e", "exc", "err"):
+                    return True
+            return False
+
+        def destination_autorisee(noeud):
+            courant = noeud
+            while courant in parents:
+                precedent, courant = courant, parents[courant]
+                # f"…".lower() : la chaîne est l'OBJET de la méthode, pas un
+                # argument — on remonte jusqu'à ce qu'on en fait vraiment.
+                if isinstance(courant, ast.Attribute) and courant.value is precedent:
+                    continue
+                if isinstance(courant, ast.Call) and courant.func is precedent:
+                    continue
+                if isinstance(courant, ast.Raise):
+                    return True
+                if isinstance(courant, (ast.Assign, ast.AugAssign)):
+                    cibles = courant.targets if isinstance(courant, ast.Assign) \
+                        else [courant.target]
+                    for c in cibles:
+                        if isinstance(c, ast.Attribute) and c.attr == "error":
+                            return True
+                        if isinstance(c, ast.Name) and c.id in ("texte", "detail"):
+                            return True
+                    return False
+                if isinstance(courant, ast.Call):
+                    f = courant.func
+                    nom = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+                    if nom in ("_log", "journal", "tracer"):
+                        return True
+                    # self._ui(self._log, f"…") : le Journal est le 1er argument
+                    if nom == "_ui" and courant.args:
+                        cible = courant.args[0]
+                        if isinstance(cible, ast.Attribute) and cible.attr == "_log":
+                            return True
+                    return False
+                if isinstance(courant, (ast.FunctionDef, ast.Module)):
+                    return False
+            return False
+
+        fautifs = [(n.lineno, ast.get_source_segment(source, n)[:60])
+                   for n in ast.walk(arbre)
+                   if isinstance(n, ast.JoinedStr) and contient_exception(n)
+                   and not destination_autorisee(n)]
+        assert not fautifs, (
+            f"exception(s) affichée(s) telles quelles (ligne, extrait) : {fautifs}")
+
+
+class TestSelectionMultiple:
+    """Étape 6 : sélection multiple dans « Mes vidéos » et actions de lot."""
+
+    B = "https://exemple.invalid/rest"
+
+    @pytest.fixture(autouse=True)
+    def _preparer(self, app):
+        sauvegarde = {n: app.__dict__.get(n) for n in ("_myvids_current_owner", "api", "_run")}
+        app._myvids_current_owner = lambda: (f"{self.B}/users/42/", "marie")
+        app.myvids_videos = [
+            {"slug": f"v{i}", "title": f"V{i}", "owner": f"{self.B}/users/42/",
+             "is_draft": False, "channel": []} for i in range(4)] + [
+            {"slug": "co", "title": "Partagée", "owner": f"{self.B}/users/7/",
+             "additional_owners": [f"{self.B}/users/42/"], "is_draft": False, "channel": []}]
+        app.myvids_filtered = list(app.myvids_videos)
+        app.myvids_multi, app.myvids_selected = [], None
+        # _run exécuté tout de suite : le lot devient synchrone et vérifiable.
+        app._run = lambda fn, *x: fn(*x)
+        yield
+        app.myvids_multi, app.myvids_selected = [], None
+        for nom, valeur in sauvegarde.items():
+            if valeur is None:
+                app.__dict__.pop(nom, None)
+            else:
+                app.__dict__[nom] = valeur
+
+    def test_ctrl_clic_emporte_la_video_ouverte(self, app):
+        app.myvids_selected = app.myvids_videos[0]
+        app._myvids_toggle_multi(app.myvids_videos[2])
+        assert app.myvids_multi == ["v0", "v2"]
+
+    def test_maj_clic_prend_la_plage(self, app):
+        app._myvids_ancre = "v1"
+        app._myvids_plage_multi(app.myvids_videos[3])
+        assert app.myvids_multi == ["v1", "v2", "v3"]
+
+    def test_clic_simple_annule_la_selection(self, app):
+        app.myvids_multi = ["v0", "v1"]
+        app._myvids_select(app.myvids_videos[2])
+        assert app.myvids_multi == []
+
+    def test_le_relachement_du_ctrl_clic_est_bloque(self):
+        """⚠️ CTkButton agit au RELÂCHEMENT : sans ce blocage, un Ctrl+clic
+        lançait aussi une sélection simple (piège rencontré dans PodAdmin)."""
+        source = open(os.path.join(RACINE, "app.py"), encoding="utf-8").read()
+        assert '"<Control-ButtonRelease-1>", lambda e: "break"' in source
+        assert '"<Shift-ButtonRelease-1>", lambda e: "break"' in source
+
+    def test_la_suppression_en_lot_ignore_la_copropriete(self, app, monkeypatch):
+        import app as module_app
+        supprimees = []
+
+        class _API:
+            def delete_video(self, v):
+                supprimees.append(v["slug"])
+        app.api = _API()
+        monkeypatch.setattr(module_app.messagebox, "askyesno", lambda *x, **k: True)
+        app._myvids_tout_selectionner()
+        app._myvids_lot_supprimer()
+        assert "co" not in supprimees, "une vidéo en co-propriété a été supprimée"
+        assert sorted(supprimees) == ["v0", "v1", "v2", "v3"]
+
+    def test_un_echec_n_arrete_pas_le_lot(self, app):
+        """Chaque vidéo est traitée INDÉPENDAMMENT."""
+        faites = []
+
+        def action(v):
+            if v["slug"] == "v1":
+                raise RuntimeError("HTTP 500")
+            faites.append(v["slug"])
+        app._do_myvids_lot(app.myvids_videos[:3], action, lambda v: None, "test")
+        assert faites == ["v0", "v2"], "le lot s'est arrêté au premier échec"
+
+    def test_statut_en_lot_envoie_les_deux_booleens(self, app, monkeypatch):
+        """Les trois statuts sont exclusifs : chaque choix envoie les DEUX
+        champs, pour ne jamais laisser une vidéo brouillon ET restreinte."""
+        import app as module_app
+        envois = []
+
+        class _API:
+            def patch_video(self, v, p):
+                envois.append(dict(p))
+        app.api = _API()
+        monkeypatch.setattr(module_app.messagebox, "askyesno", lambda *x, **k: True)
+        app.myvids_multi = ["v0", "v1"]
+        app._myvids_lot_statut("Restreint")
+        assert envois == [{"is_draft": False, "is_restricted": True}] * 2
+
+    def test_une_video_seule_a_disciplines_et_chaines_themes(self):
+        import inspect
+
+        import app as module_app
+        source = inspect.getsource(module_app.App._myvids_render_detail)
+        assert "_myvids_edit_disciplines" in source
+        assert "_myvids_edit_channels" in source
+
+
+class TestBarreEnMasseRetiree:
+    """La barre « Modifier en masse » a été retirée (PodAdmin et v3) : le type
+    d'un lot passe par la sélection, avec le nombre de vidéos dans le bouton."""
+
+    def test_barre_absente(self, app):
+        assert not hasattr(app, "myvids_mass_type")
+
+    def test_le_bouton_de_type_du_lot_porte_le_nombre(self):
+        import inspect
+
+        import app as module_app
+        source = inspect.getsource(module_app.App._myvids_render_lot)
+        assert 'f"Appliquer le type à {len(vids)} vidéos"' in source

@@ -72,6 +72,16 @@ except Exception:
 APP_TITLE = "Pod Téléverseur — Université de Toulouse"
 APP_VERSION = __version__
 
+# Délai avant de rafraîchir une liste pendant la frappe dans un filtre (ms).
+FILTER_DELAY_MS = 250
+
+# Statut d'une vidéo → champs envoyés. Les trois états sont EXCLUSIFS :
+# chaque choix envoie les DEUX booléens, pour ne jamais laisser une vidéo à
+# la fois « brouillon » et « restreinte ».
+STATUTS = {"Brouillon": {"is_draft": True, "is_restricted": False},
+           "Public":    {"is_draft": False, "is_restricted": False},
+           "Restreint": {"is_draft": False, "is_restricted": True}}
+
 # Texte de la fenêtre de mise à jour OBLIGATOIRE. Volontairement neutre : il
 # ne donne jamais la raison du blocage (voir `_bloquer_demarrage`).
 MESSAGE_BLOCAGE = ("Une nouvelle version de Pod Téléverseur est nécessaire "
@@ -259,7 +269,7 @@ class App(_AppBase):
         self.status_dot = ctk.CTkLabel(box, text="⚫", font=ctk.CTkFont(size=13))
         self.status_dot.pack(side="left", padx=8, pady=6)
         self.status_lbl = ctk.CTkLabel(box, text="Non connecté",
-                                       font=ctk.CTkFont(size=11), text_color="gray")
+                                       font=ctk.CTkFont(size=11), text_color=T_SECONDAIRE)
         self.status_lbl.pack(side="left")
 
         # Agent identifié
@@ -375,14 +385,14 @@ class App(_AppBase):
         sel.pack(fill="x", pady=(0, 6))
 
         ctk.CTkButton(sel, text="➕  Ajouter des fichiers", width=190,
-                      command=self._add_files).pack(side="left", padx=(0, 8))
+                      command=self._add_files, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(side="left", padx=(0, 8))
         ctk.CTkButton(sel, text="📁  Ajouter un dossier", width=190,
-                      command=self._add_folder).pack(side="left", padx=(0, 8))
+                      command=self._add_folder, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(side="left", padx=(0, 8))
         ctk.CTkButton(sel, text="🗑  Vider la liste", width=140,
                       fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
-                      command=self._clear_items).pack(side="left")
+                      command=self._clear_items, text_color=T_SUR_NEUTRE).pack(side="left")
 
-        self.count_lbl = ctk.CTkLabel(sel, text="0 vidéo(s)", text_color="gray",
+        self.count_lbl = ctk.CTkLabel(sel, text="0 vidéo(s)", text_color=T_SECONDAIRE,
                                       font=ctk.CTkFont(size=11))
         self.count_lbl.pack(side="right")
 
@@ -395,18 +405,34 @@ class App(_AppBase):
                                                            padx=12, pady=(10, 4), sticky="w")
 
         ctk.CTkLabel(common, text="Type :").grid(row=1, column=0, padx=(12, 4), pady=8, sticky="e")
-        self.type_combo = ctk.CTkComboBox(common, values=["(chargement…)"], width=200)
+        self.type_combo = ctk.CTkComboBox(common, values=["(chargement…)"], width=200, **STYLE_ZONE)
         self.type_combo.grid(row=1, column=1, padx=4, pady=8, sticky="w")
 
-        ctk.CTkLabel(common, text="Visibilité :").grid(row=1, column=2, padx=(20, 4), pady=8, sticky="e")
+        # Discipline commune au lot — FACULTATIVE, à côté du Type (les deux
+        # classements de la vidéo), comme dans PodAdmin.
+        #
+        # ⚠️ Ligne 1 et non ligne 2 : « Propriétaires additionnels » occupe
+        # déjà la ligne 2, colonnes 2-3, et Tk superpose sans prévenir deux
+        # widgets placés sur la même cellule.
+        #
+        # Facultative : l'imposer pousserait à choisir au hasard, ce qui donne
+        # l'illusion d'un classement — pire que pas de classement.
+        ctk.CTkLabel(common, text="Discipline :").grid(
+            row=1, column=2, padx=(20, 4), pady=8, sticky="e")
+        self.upload_discipline = ctk.CTkOptionMenu(
+            common, width=200, values=[self.AUCUNE_DISCIPLINE], **STYLE_CHAMP)
+        self.upload_discipline.set(self.AUCUNE_DISCIPLINE)
+        self.upload_discipline.grid(row=1, column=3, padx=4, pady=8, sticky="w")
+
+        ctk.CTkLabel(common, text="Visibilité :").grid(row=2, column=0, padx=(12, 4), pady=8, sticky="e")
         self.visibility_combo = ctk.CTkComboBox(
-            common, width=200, values=["Brouillon / Privé", "Public"])
+            common, width=200, values=["Brouillon / Privé", "Public"], **STYLE_ZONE)
         self.visibility_combo.set("Brouillon / Privé")
-        self.visibility_combo.grid(row=1, column=3, padx=4, pady=8, sticky="w")
+        self.visibility_combo.grid(row=2, column=1, padx=4, pady=8, sticky="w")
 
         self.encode_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(common, text="Lancer l'encodage après le téléversement",
-                        variable=self.encode_var).grid(row=2, column=0, columnspan=2,
+                        variable=self.encode_var).grid(row=3, column=0, columnspan=2,
                                                         padx=12, pady=(0, 6), sticky="w")
 
         # — Propriétaire des vidéos (choix EXPLICITE et OBLIGATOIRE) —
@@ -417,7 +443,7 @@ class App(_AppBase):
                      font=ctk.CTkFont(weight="bold")).grid(
             row=4, column=0, columnspan=4, padx=12, pady=(6, 0), sticky="w")
         ctk.CTkButton(common, text="🎯  Choisir le propriétaire…", width=240,
-                      command=self._choose_upload_owner).grid(
+                      command=self._choose_upload_owner, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).grid(
             row=5, column=0, columnspan=2, padx=12, pady=(2, 10), sticky="w")
         self.owner_status_lbl = ctk.CTkLabel(common, text="⚠️ à définir avant l'envoi",
                                              text_color=T_ALERTE,
@@ -428,9 +454,9 @@ class App(_AppBase):
         # Propriétaires additionnels communs
         ctk.CTkButton(common, text="👥  Propriétaires additionnels…", width=240,
                       fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
-                      command=self._edit_additional_owners).grid(
+                      command=self._edit_additional_owners, text_color=T_SUR_NEUTRE).grid(
             row=2, column=2, columnspan=2, padx=12, pady=(0, 6), sticky="w")
-        self.add_owners_lbl = ctk.CTkLabel(common, text="aucun", text_color="gray",
+        self.add_owners_lbl = ctk.CTkLabel(common, text="aucun", text_color=T_SECONDAIRE,
                                            font=ctk.CTkFont(size=11))
         self.add_owners_lbl.grid(row=3, column=2, columnspan=2, padx=12, pady=(0, 8), sticky="w")
 
@@ -458,7 +484,7 @@ class App(_AppBase):
                       "ou utilisez les boutons ci-dessus."
                       if getattr(self, "dnd_ok", False) else
                       "Aucune vidéo.\nUtilisez « Ajouter des fichiers » ou « Ajouter un dossier ».")
-        self._empty_hint = ctk.CTkLabel(self.list_frame, text=empty_text, text_color="gray")
+        self._empty_hint = ctk.CTkLabel(self.list_frame, text=empty_text, text_color=T_SECONDAIRE)
         self._empty_hint.pack(pady=40)
 
         # — Lancement + progression —
@@ -483,7 +509,7 @@ class App(_AppBase):
         self.retry_btn.pack(side="left", padx=(8, 0))
         self.retry_btn.pack_forget()   # masqué par défaut
 
-        self.global_msg = ctk.CTkLabel(launch, text="", text_color="gray",
+        self.global_msg = ctk.CTkLabel(launch, text="", text_color=T_SECONDAIRE,
                                        font=ctk.CTkFont(size=12))
         self.global_msg.pack(side="left", padx=14)
 
@@ -491,7 +517,7 @@ class App(_AppBase):
         self.file_progress = ctk.CTkProgressBar(frame)
         self.file_progress.pack(fill="x", pady=(8, 0))
         self.file_progress.set(0)
-        self.file_progress_lbl = ctk.CTkLabel(frame, text="", text_color="gray",
+        self.file_progress_lbl = ctk.CTkLabel(frame, text="", text_color=T_SECONDAIRE,
                                               font=ctk.CTkFont(size=10))
         self.file_progress_lbl.pack(anchor="w")
 
@@ -584,7 +610,7 @@ class App(_AppBase):
                           "ou utilisez les boutons ci-dessus."
                           if getattr(self, "dnd_ok", False) else
                           "Aucune vidéo.\nUtilisez « Ajouter des fichiers » ou « Ajouter un dossier ».")
-            ctk.CTkLabel(self.list_frame, text=empty_text, text_color="gray").pack(pady=40)
+            ctk.CTkLabel(self.list_frame, text=empty_text, text_color=T_SECONDAIRE).pack(pady=40)
             self.count_lbl.configure(text="0 vidéo(s)")
             return
 
@@ -624,7 +650,7 @@ class App(_AppBase):
             # bouton supprimer
             ctk.CTkButton(row, text="✕", width=28, height=26,
                           fg_color=C_NEUTRE, hover_color=C_DESTR_SURV,
-                          command=lambda item=it: self._remove_item(item)).pack(side="right", padx=4)
+                          command=lambda item=it: self._remove_item(item), text_color=T_SUR_NEUTRE).pack(side="right", padx=4)
 
             # état
             it.status_lbl = ctk.CTkLabel(row, text=it.status, width=100,
@@ -663,7 +689,7 @@ class App(_AppBase):
         if urls:
             self.add_owners_lbl.configure(text=", ".join(labels)[:60], text_color=T_SUCCES)
         else:
-            self.add_owners_lbl.configure(text="aucun", text_color="gray")
+            self.add_owners_lbl.configure(text="aucun", text_color=T_SECONDAIRE)
 
     # ── Propriétaire des vidéos (choix explicite et obligatoire) ─────────
 
@@ -761,11 +787,18 @@ class App(_AppBase):
         # Mémorise propriétaire et type pour une éventuelle relance des échecs.
         self._last_owner_url = owner_url
         self._last_type_url = type_url
+        # Discipline lue ICI, dans le thread principal (lire un widget Tk depuis
+        # un thread n'est pas fiable), et mémorisée : sans cela, une vidéo
+        # relancée après échec perdrait son classement.
+        self._last_discipline_url = self._discipline_choisie()
 
         self.launch_btn.configure(state="disabled")
         self.retry_btn.configure(state="disabled")
         self.batch_progress.set(0)
-        self._run(self._do_batch_upload, owner_url, type_url)
+        self._last_is_draft = self.visibility_combo.get().startswith("Brouillon")
+        self._last_do_encode = bool(self.encode_var.get())
+        self._run(self._do_batch_upload, owner_url, type_url, self._last_discipline_url,
+                  self._last_is_draft, self._last_do_encode)
 
     @staticmethod
     def _file_size(path: str) -> int:
@@ -812,13 +845,16 @@ class App(_AppBase):
             _t.sleep(cfg.CHUNK_VERIFY_INTERVAL_S)
         return None
 
-    def _do_batch_upload(self, owner_url: str, type_url: str):
+    def _do_batch_upload(self, owner_url: str, type_url: str, discipline_url: str = "",
+                         is_draft: bool = True, do_encode: bool = True):
         """(Thread) Téléverse chaque vidéo, ajoute les crédits, lance l'encodage, suit la progression.
 
         Les vidéos déjà réussies (it.done) sont ignorées : cette méthode sert
         aussi bien au 1ᵉʳ envoi qu'à la RELANCE des seuls échecs."""
-        is_draft = self.visibility_combo.get().startswith("Brouillon")
-        do_encode = self.encode_var.get()
+        # `is_draft` et `do_encode` arrivent en ARGUMENTS, lus dans le thread
+        # principal par l'appelant : lire un widget Tk depuis ce thread de
+        # travail provoque des plantages aléatoires (« main thread is not in
+        # main loop ») — défaut déjà corrigé dans PodAdmin.
         total = len(self.items)
         ok = 0
         chunked = None      # session véhicule DEPOT, ouverte à la 1re nécessité
@@ -830,10 +866,10 @@ class App(_AppBase):
                 self._ui(self.batch_progress.set, idx / total)
                 continue
 
-            self._ui(self._set_item_status, it, "en cours", "#3b82f6")
+            self._ui(self._set_item_status, it, "en cours", T_SECONDAIRE)
             self._ui(self.file_progress.set, 0)
             self._ui(self.global_msg.configure,
-                     text=f"Téléversement {idx}/{total} : {it.title}", text_color="gray")
+                     text=f"Téléversement {idx}/{total} : {it.title}", text_color=T_SECONDAIRE)
 
             def progress(sent, tot, item=it):
                 # Callback de progression : met à jour la barre du fichier en cours
@@ -881,7 +917,7 @@ class App(_AppBase):
                             self._ui(self._log,
                                      f"⏳ Finalisation coupée par la passerelle (HTTP {ce.status}) "
                                      "— Pod termine côté serveur, vérification en cours…")
-                            self._ui(self._set_item_status, it, "⏳ finalisation serveur", "#f59e0b")
+                            self._ui(self._set_item_status, it, "⏳ finalisation serveur", T_ALERTE)
                             video = self._verify_chunked_creation(
                                 search_term, pre_ids, self.vehicle_owner_url)
                             if not video:
@@ -911,7 +947,7 @@ class App(_AppBase):
                             self.api.patch_video(video, patch)
                         except Exception as e:
                             it.error = f"réattribution échouée : {e}"
-                            self._ui(self._set_item_status, it, "⚠️ NON réattribuée", "#ef4444")
+                            self._ui(self._set_item_status, it, "⚠️ NON réattribuée", T_ERREUR)
                             self._ui(self._log,
                                      f"⚠️⚠️ {it.title} : vidéo créée (slug={slug}) mais NON "
                                      f"réattribuée à {owner_url} — RESTE au nom du véhicule ! "
@@ -937,6 +973,15 @@ class App(_AppBase):
                     it.slug = video.get("slug", "") if isinstance(video, dict) else ""
                     it.video_url = video.get("url", "") if isinstance(video, dict) else ""
 
+                # Discipline — rattachée APRÈS création, par PATCH (relation
+                # multiple : une LISTE d'URLs). Un échec ne fait PAS échouer le
+                # dépôt : la vidéo est déposée, seul son classement manque.
+                if discipline_url and it.slug:
+                    try:
+                        self.api.set_disciplines(it.slug, [discipline_url])
+                    except Exception as e:
+                        self._ui(self._log, f"Discipline non rattachée ({it.title}) : {e}")
+
                 # Contributeurs communs
                 for c in self.common_contributors:
                     try:
@@ -955,21 +1000,21 @@ class App(_AppBase):
                 it.done = True            # marque le succès (ne sera pas relancé)
                 it.error = ""
                 ok += 1
-                self._ui(self._set_item_status, it, "✅ terminé", "#22c55e")
+                self._ui(self._set_item_status, it, "✅ terminé", T_SUCCES)
                 self._ui(self._log,
                          f"Téléversé{' (chunké)' if big else ''} : {it.title}  (slug={it.slug})")
 
             except PodChunkedError as e:
                 it.error = f"{e} — {e.body}"
-                self._ui(self._set_item_status, it, "❌ échec", "#ef4444")
+                self._ui(self._set_item_status, it, "❌ échec", T_ERREUR)
                 self._ui(self._log, f"ÉCHEC chunké {it.title} : {e} | {e.body[:200]}")
             except PodAPIError as e:
                 it.error = f"{e} — {e.body}"
-                self._ui(self._set_item_status, it, "❌ échec", "#ef4444")
+                self._ui(self._set_item_status, it, "❌ échec", T_ERREUR)
                 self._ui(self._log, f"ÉCHEC {it.title} : {e} | {e.body[:200]}")
             except Exception as e:
                 it.error = str(e)
-                self._ui(self._set_item_status, it, "❌ échec", "#ef4444")
+                self._ui(self._set_item_status, it, "❌ échec", T_ERREUR)
                 self._ui(self._log, f"ÉCHEC {it.title} : {e}")
 
             self._ui(self.batch_progress.set, idx / total)
@@ -1017,11 +1062,14 @@ class App(_AppBase):
         # Remet les échecs en « en attente » pour un affichage propre.
         for it in self.items:
             if not it.done:
-                self._set_item_status(it, "en attente", "gray60")
+                self._set_item_status(it, "en attente", T_SECONDAIRE)
         self.launch_btn.configure(state="disabled")
         self.retry_btn.configure(state="disabled")
         self._log("Relance des vidéos en échec…")
-        self._run(self._do_batch_upload, owner_url, type_url)
+        self._run(self._do_batch_upload, owner_url, type_url,
+                  getattr(self, "_last_discipline_url", ""),
+                  self.visibility_combo.get().startswith("Brouillon"),
+                  bool(self.encode_var.get()))
 
     # ═════════════════════════════════════════════════════════════════════
     #  ONGLET « MES VIDÉOS »
@@ -1036,7 +1084,8 @@ class App(_AppBase):
     #     • panneau détail/actions : renommer, statut (Brouillon/Public/
     #       Restreint), type, co-propriétaires, sous-titres, REMPLACER le
     #       fichier & ré-encoder, supprimer ;
-    #     • modification du type « en masse » sur les vidéos affichées.
+    #     • sélection multiple : statut, type, disciplines, chaînes et
+    #       thèmes, suppression, sur les vidéos sélectionnées.
     #
     #  DIFFÉRENCES VOULUES avec PodAdmin :
     #     • PAS d'affectation à des groupes d'accès (bloc retiré) ;
@@ -1070,10 +1119,17 @@ class App(_AppBase):
         top = ctk.CTkFrame(frame, fg_color="transparent")
         top.pack(fill="x")
         self.myvids_refresh_btn = ctk.CTkButton(
-            top, text="🔄  Rafraîchir", fg_color=C_SUCCES, hover_color=C_SUCCES_SURV,
+            top, text="🔄  Rafraîchir", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+            text_color=T_SUR_NEUTRE,
+            # Gris et non vert : utilitaire, comme dans PodAdmin. Le seul
+            # bouton coloré d'un écran doit être son action principale.
             command=self._myvids_load)
         self.myvids_refresh_btn.pack(side="left")
-        self.myvids_status = ctk.CTkLabel(top, text="(non chargé)", text_color="gray",
+        # Sélection multiple : Ctrl+clic et Maj+clic dans la liste, ou ce bouton.
+        ctk.CTkButton(top, text="☑  Tout sélectionner", width=160, fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=self._myvids_tout_selectionner).pack(side="left", padx=(8, 0))
+        self.myvids_status = ctk.CTkLabel(top, text="(non chargé)", text_color=T_SECONDAIRE,
                                           font=ctk.CTkFont(size=11))
         self.myvids_status.pack(side="left", padx=10)
 
@@ -1085,37 +1141,27 @@ class App(_AppBase):
         self.myvids_text.bind("<KeyRelease>", lambda e: self._myvids_apply_filter())
         self.myvids_statut = ctk.CTkOptionMenu(
             filt, width=130, values=["Tous statuts", "Brouillon", "Public", "Restreinte"],
-            command=lambda _c: self._myvids_apply_filter())
+            command=lambda _c: self._myvids_apply_filter(), **STYLE_CHAMP)
         self.myvids_statut.set("Tous statuts")
         self.myvids_statut.pack(side="left", padx=6)
         self.myvids_encode = ctk.CTkOptionMenu(
             filt, width=150, values=["Tout encodage", "Encodées", "Non-encodées"],
-            command=lambda _c: self._myvids_apply_filter())
+            command=lambda _c: self._myvids_apply_filter(), **STYLE_CHAMP)
         self.myvids_encode.set("Tout encodage")
         self.myvids_encode.pack(side="left", padx=6)
         self.myvids_chan = ctk.CTkOptionMenu(filt, width=170, values=["Toutes chaînes"],
-                                             command=lambda _c: self._myvids_apply_filter())
+                                             command=lambda _c: self._myvids_apply_filter(), **STYLE_CHAMP)
         self.myvids_chan.set("Toutes chaînes")
         self.myvids_chan.pack(side="left", padx=6)
         self.myvids_type = ctk.CTkOptionMenu(filt, width=150, values=["Tous types"],
-                                             command=lambda _c: self._myvids_apply_filter())
+                                             command=lambda _c: self._myvids_apply_filter(), **STYLE_CHAMP)
         self.myvids_type.set("Tous types")
         self.myvids_type.pack(side="left", padx=6)
 
-        # — Action « en masse » : appliquer un type aux vidéos AFFICHÉES —
-        # Détachée visuellement des filtres pour éviter toute confusion.
-        ctk.CTkFrame(frame, height=1, fg_color=C_NEUTRE).pack(fill="x", pady=(6, 0))
-        massbar = ctk.CTkFrame(frame, fg_color=("gray90", "gray16"),
-                               corner_radius=8, border_width=1, border_color=S_FILET)
-        massbar.pack(fill="x", pady=(4, 4))
-        ctk.CTkLabel(massbar,
-                     text="✏️  Modifier en masse — appliquer ce type aux vidéos affichées :",
-                     font=ctk.CTkFont(size=11), text_color=T_SECONDAIRE
-                     ).pack(side="left", padx=(10, 8), pady=6)
-        self.myvids_mass_type = ctk.CTkOptionMenu(massbar, width=170, values=["(aucun type)"])
-        self.myvids_mass_type.pack(side="left", pady=6)
-        ctk.CTkButton(massbar, text="Appliquer", width=110,
-                      command=self._myvids_mass_set_type).pack(side="left", padx=8, pady=6)
+        # La barre « Modifier en masse » (type des vidéos AFFICHÉES) a été
+        # RETIRÉE : le type d'un lot passe par la sélection (« Tout
+        # sélectionner » puis le panneau de lot), avec confirmation — un seul
+        # chemin pour la même action, comme dans PodAdmin.
 
         # — Corps : liste (gauche) + détail (droite) —
         body = ctk.CTkFrame(frame, fg_color="transparent")
@@ -1124,7 +1170,7 @@ class App(_AppBase):
         body.columnconfigure(1, weight=3)
         body.rowconfigure(1, weight=1)
 
-        self.myvids_count_lbl = ctk.CTkLabel(body, text="", text_color="gray",
+        self.myvids_count_lbl = ctk.CTkLabel(body, text="", text_color=T_SECONDAIRE,
                                              font=ctk.CTkFont(size=11), anchor="w")
         self.myvids_count_lbl.grid(row=0, column=0, sticky="w", pady=(0, 2))
         self.myvids_list = ctk.CTkScrollableFrame(body, label_text="Mes vidéos")
@@ -1135,6 +1181,9 @@ class App(_AppBase):
         # — Données (caches internes de l'onglet) —
         self.myvids_videos = []          # vidéos du propriétaire (déjà filtrées owner)
         self.myvids_channels = []        # chaînes (pour le filtre + l'affichage)
+        self.myvids_themes = []          # thèmes (sélecteur chaînes & thèmes)
+        self.myvids_multi = []           # slugs de la sélection multiple, dans l'ordre
+        self._myvids_ancre = None        # point de départ d'une sélection Maj+clic
         self.myvids_chan_by_url = {}     # URL chaîne → titre
         self.myvids_filtered = []        # sous-ensemble affiché (après filtres)
         self.myvids_selected = None      # vidéo en cours d'édition
@@ -1170,8 +1219,12 @@ class App(_AppBase):
         owner_url, name = self._myvids_current_owner()
         ids = set()
         if owner_url:
-            ids.add(owner_url)
-            ids.add(owner_url.split("/")[-1])   # id numérique en fin d'URL
+            # ⚠️ Barre finale retirée AVANT d'extraire l'id : l'URL de l'API
+            # finit par « / », et `split("/")[-1]` donnait alors une chaîne
+            # VIDE — le numéro du compte n'était jamais ajouté, et une vidéo
+            # dont le champ `owner` est l'URL n'était pas reconnue.
+            nette = str(owner_url).rstrip("/")
+            ids.update({owner_url, nette, nette.split("/")[-1]})
         if name:
             ids.add(name)
         return {x for x in ids if x}
@@ -1199,7 +1252,7 @@ class App(_AppBase):
         else:
             self.myvids_owner_lbl.configure(
                 text=f"Vidéos du compte : {name or owner_url}   "
-                     "(seules les vidéos de ce propriétaire sont affichées).",
+                     "(vidéos dont ce compte est propriétaire ou co-propriétaire).",
                 text_color=T_SECONDAIRE)
             self.myvids_refresh_btn.configure(state="normal")
 
@@ -1225,7 +1278,7 @@ class App(_AppBase):
             for w in self.myvids_list.winfo_children():
                 w.destroy()
             self._myvids_render_detail()
-            self.myvids_status.configure(text="(à rafraîchir)", text_color="gray")
+            self.myvids_status.configure(text="(à rafraîchir)", text_color=T_SECONDAIRE)
         # Rafraîchissement LIVE si l'onglet est à l'écran, sinon au prochain affichage.
         try:
             visible = self.tabs["myvids"].winfo_ismapped()
@@ -1254,7 +1307,7 @@ class App(_AppBase):
             self.myvids_status.configure(text="Choisissez d'abord un propriétaire.",
                                          text_color=T_ALERTE)
             return
-        self.myvids_status.configure(text="⏳  Chargement…", text_color="gray")
+        self.myvids_status.configure(text="⏳  Chargement…", text_color=T_SECONDAIRE)
         self._run(self._do_myvids_load, owner_url)
 
     def _do_myvids_load(self, owner_url):
@@ -1273,7 +1326,7 @@ class App(_AppBase):
         try:
             def prog(n):
                 self._ui(self.myvids_status.configure,
-                         text=f"⏳  {n} vidéos lues…", text_color="gray")
+                         text=f"⏳  {n} vidéos lues…", text_color=T_SECONDAIRE)
             # 1) Tentative de filtre serveur — PUREMENT FACULTATIVE.
             raw = self._myvids_lire_videos(owner_url, prog)
             # 2) Filtre client : on ne garde que les vidéos du propriétaire.
@@ -1284,6 +1337,13 @@ class App(_AppBase):
                 channels = self.api.get_channels()
             except Exception:
                 channels = []
+            # Thèmes : même moment. Un échec n'empêche rien — le sélecteur
+            # montre alors les chaînes seules.
+            try:
+                self.myvids_themes = self.api.get_themes()
+            except Exception as e:
+                self.myvids_themes = []
+                self._ui(self._log, f"Thèmes non chargés : {e}")
 
             self.myvids_videos = videos
             self.myvids_channels = channels
@@ -1328,19 +1388,48 @@ class App(_AppBase):
         if nom:
             variantes.append(("owner__username", {"owner__username": nom}))
 
+        possedees = self._premier_filtre_accepte(variantes, prog)
+        if possedees is None:
+            self._ui(self._log, "Aucun filtre serveur accepté : lecture complète "
+                                "du fonds, puis filtrage dans l'application.")
+            return self.api.get_all_videos(progress_cb=prog)
+
+        # ⚠️ Le filtre `owner` ne renvoie que les vidéos POSSÉDÉES : les vidéos
+        # en CO-PROPRIÉTÉ n'y figurent jamais. On tente le filtre équivalent
+        # sur `additional_owners` ; s'il est refusé, seule une lecture
+        # complète garantit de ne pas les perdre.
+        variantes_co = []
+        if numero.isdigit():
+            variantes_co.append(("additional_owners = id numérique",
+                                 {"additional_owners": numero}))
+        if owner_url:
+            variantes_co.append(("additional_owners = URL complète",
+                                 {"additional_owners": owner_url}))
+        copossedees = self._premier_filtre_accepte(variantes_co, prog)
+        if copossedees is None:
+            self._ui(self._log, "Filtre de co-propriété refusé : lecture "
+                                "complète, pour ne perdre aucune vidéo partagée.")
+            return self.api.get_all_videos(progress_cb=prog)
+
+        vues, fusion = set(), []
+        for v in list(possedees) + list(copossedees):
+            cle = v.get("slug") or id(v)
+            if cle not in vues:
+                vues.add(cle)
+                fusion.append(v)
+        return fusion
+
+    def _premier_filtre_accepte(self, variantes, prog):
+        """Première forme de filtre acceptée par le serveur, ou None."""
         for libelle, params in variantes:
             try:
                 return self.api.get_all_videos(progress_cb=prog,
                                                extra_params=params)
             except Exception as e:
-                # Refus du serveur : on note et on essaie la forme suivante.
                 self._ui(self._log,
                          f"Filtre serveur « {libelle} » refusé "
                          f"({e.__class__.__name__}) — on essaie autrement.")
-
-        self._ui(self._log, "Aucun filtre serveur accepté : lecture complète "
-                            "du fonds, puis filtrage dans l'application.")
-        return self.api.get_all_videos(progress_cb=prog)
+        return None
 
     def _myvids_refresh_channel_menu(self):
         """Remplit le filtre par chaîne avec les chaînes chargées."""
@@ -1349,17 +1438,13 @@ class App(_AppBase):
         self.myvids_chan.set("Toutes chaînes")
 
     def _myvids_refresh_type_menu(self):
-        """Remplit le filtre par type et le menu « en masse » avec les types.
+        """Remplit le filtre par type avec les types.
         Sans danger si appelé avant que les types soient chargés."""
         titles = sorted((self.type_map or {}).keys(), key=str.lower)
         if hasattr(self, "myvids_type"):
             self.myvids_type.configure(values=["Tous types"] + titles)
             if self.myvids_type.get() not in (["Tous types"] + titles):
                 self.myvids_type.set("Tous types")
-        if hasattr(self, "myvids_mass_type"):
-            self.myvids_mass_type.configure(values=titles or ["(aucun type)"])
-            if titles and self.myvids_mass_type.get() not in titles:
-                self.myvids_mass_type.set(titles[0])
 
     # ── Identité du propriétaire d'une vidéo ───────────────────────────────
 
@@ -1371,13 +1456,36 @@ class App(_AppBase):
             return o.get("url") or o.get("username") or ""
         return o if o is not None else ""           # URL (str), username ou id
 
-    def _video_belongs_to(self, video, owner_ids: set) -> bool:
-        """Vrai si la vidéo appartient au propriétaire (comparaison souple :
-        on teste l'identifiant propriétaire contre l'URL, le username et l'id)."""
-        oid = str(self._video_owner_id(video)).rstrip("/")
-        if not oid:
+    @staticmethod
+    def _correspond(valeur, owner_ids: set) -> bool:
+        """Une référence de compte (URL, id, username, ou dict {url, username})
+        désigne-t-elle le compte courant ? Comparaison sans barre finale."""
+        if isinstance(valeur, dict):
+            return any(App._correspond(valeur.get(k), owner_ids)
+                       for k in ("url", "username", "id") if valeur.get(k))
+        v = str(valeur or "").rstrip("/")
+        if not v:
             return False
-        return oid in owner_ids or oid.split("/")[-1] in owner_ids
+        ids = {str(i).rstrip("/") for i in owner_ids}
+        return v in ids or v.split("/")[-1] in ids
+
+    def _role_sur_video(self, video, owner_ids: set):
+        """« proprietaire », « coproprietaire », ou None.
+
+        Les deux rôles entrent dans « Mes vidéos » ; seul le propriétaire peut
+        SUPPRIMER (Pod le refuse à un co-propriétaire)."""
+        if self._correspond(self._video_owner_id(video), owner_ids):
+            return "proprietaire"
+        autres = video.get("additional_owners") or []
+        if not isinstance(autres, (list, tuple)):
+            autres = [autres]
+        if any(self._correspond(u, owner_ids) for u in autres):
+            return "coproprietaire"
+        return None
+
+    def _video_belongs_to(self, video, owner_ids: set) -> bool:
+        """Vrai si le compte est propriétaire OU co-propriétaire de la vidéo."""
+        return self._role_sur_video(video, owner_ids) is not None
 
     def _myvids_owner_label(self, v) -> str:
         """Nom lisible du propriétaire d'une vidéo (pour l'affichage)."""
@@ -1453,7 +1561,7 @@ class App(_AppBase):
 
         if not self.myvids_filtered:
             ctk.CTkLabel(self.myvids_list, text="Aucune vidéo ne correspond.",
-                         text_color="gray").pack(pady=10)
+                         text_color=T_SECONDAIRE).pack(pady=10)
             return
 
         CAP = 300
@@ -1463,19 +1571,347 @@ class App(_AppBase):
             is_sel = slug == sel_slug
             title = (v.get("title") or "(sans titre)")[:48]
             tag = "📝" if v.get("is_draft") else "🌐"      # brouillon / public
-            ctk.CTkButton(
-                self.myvids_list, text=f"{tag}  {title}", anchor="w", height=28,
-                fg_color=("gray75", "gray30") if is_sel else "transparent",
+            if self._role_sur_video(v, self._myvids_owner_ids()) == "coproprietaire":
+                tag += " 👥"                                 # co-propriété
+            en_lot = slug in self.myvids_multi
+            btn = ctk.CTkButton(
+                self.myvids_list, text=f"{tag}  {title}", anchor="w", height=H_NORMAL,
+                fg_color=C_MULTI if en_lot else (("gray75", "gray30") if is_sel else "transparent"),
                 text_color=("gray10", "gray90"), hover_color=("gray75", "gray28"),
                 font=ctk.CTkFont(size=12),
-                command=lambda vv=v: self._myvids_select(vv)).pack(fill="x", pady=1)
+                command=lambda vv=v: self._myvids_select(vv))
+            btn.pack(fill="x", pady=1)
+            # ⚠️ CTkButton déclenche sa commande au RELÂCHEMENT du clic : bloquer
+            # le seul <Control-Button-1> ne suffit pas, le relâchement lançait
+            # quand même une sélection simple (piège rencontré dans PodAdmin).
+            btn.bind("<Control-Button-1>", lambda e, vv=v: self._myvids_toggle_multi(vv))
+            btn.bind("<Shift-Button-1>", lambda e, vv=v: self._myvids_plage_multi(vv))
+            btn.bind("<Control-ButtonRelease-1>", lambda e: "break")
+            btn.bind("<Shift-ButtonRelease-1>", lambda e: "break")
         if len(self.myvids_filtered) > CAP:
             ctk.CTkLabel(self.myvids_list,
                          text=f"… +{len(self.myvids_filtered) - CAP} autres. Affinez le filtre.",
-                         text_color="gray").pack(pady=4)
+                         text_color=T_SECONDAIRE).pack(pady=4)
+
+    # ── Sélection multiple ──────────────────────────────────────────────
+
+    @staticmethod
+    def _rel_urls(value, normalise: bool = True) -> list:
+        """URLs d'une relation (chaîne, thème, discipline) : le champ peut être
+        une URL, une liste d'URLs ou d'objets imbriqués selon le sérialiseur."""
+        if not value:
+            return []
+        if not isinstance(value, (list, tuple)):
+            value = [value]
+        sortie = []
+        for x in value:
+            u = x.get("url", "") if isinstance(x, dict) else str(x)
+            if u:
+                sortie.append(u.rstrip("/") if normalise else u)
+        return sortie
+
+    def _myvids_toggle_multi(self, v):
+        """Ctrl+clic : ajoute ou retire une vidéo de la sélection."""
+        slug = v.get("slug")
+        if not self.myvids_multi and self.myvids_selected:
+            # Le premier Ctrl+clic emporte la vidéo déjà ouverte : c'est le
+            # comportement attendu d'un gestionnaire de fichiers.
+            premier = self.myvids_selected.get("slug")
+            if premier and premier != slug:
+                self.myvids_multi.append(premier)
+        if slug in self.myvids_multi:
+            self.myvids_multi.remove(slug)
+        else:
+            self.myvids_multi.append(slug)
+        self._myvids_ancre = slug
+        self._myvids_apres_selection()
+        return "break"
+
+    def _myvids_plage_multi(self, v):
+        """Maj+clic : sélectionne toute la plage depuis la dernière vidéo cliquée."""
+        ordre = [x.get("slug") for x in self.myvids_filtered]
+        ancre = self._myvids_ancre or (self.myvids_selected or {}).get("slug")
+        cible = v.get("slug")
+        if ancre in ordre and cible in ordre:
+            i, j = sorted((ordre.index(ancre), ordre.index(cible)))
+            for slug in ordre[i:j + 1]:
+                if slug not in self.myvids_multi:
+                    self.myvids_multi.append(slug)
+        else:
+            self.myvids_multi = [cible]
+        self._myvids_apres_selection()
+        return "break"
+
+    def _myvids_tout_selectionner(self):
+        """Sélectionne toutes les vidéos AFFICHÉES (après filtres)."""
+        self.myvids_multi = [x.get("slug") for x in self.myvids_filtered if x.get("slug")]
+        self._myvids_apres_selection()
+
+    def _myvids_vider_selection(self):
+        self.myvids_multi = []
+        self._myvids_apres_selection()
+
+    def _myvids_apres_selection(self):
+        if len(self.myvids_multi) == 1:
+            # Une seule vidéo : on revient au panneau de détail classique.
+            slug = self.myvids_multi[0]
+            self.myvids_selected = next(
+                (x for x in self.myvids_videos if x.get("slug") == slug), None)
+            self.myvids_multi = []
+        self._render_myvids_list()
+        self._myvids_render_detail()
+
+    def _myvids_lot(self) -> list:
+        par_slug = {x.get("slug"): x for x in self.myvids_videos}
+        return [par_slug[s] for s in self.myvids_multi if s in par_slug]
+
+    def _myvids_render_lot(self):
+        """Panneau des actions sur la sélection multiple."""
+        vids = self._myvids_lot()
+        ids = self._myvids_owner_ids()
+        n_co = sum(1 for x in vids if self._role_sur_video(x, ids) == "coproprietaire")
+        d = self.myvids_detail
+        ctk.CTkLabel(d, text=f"{len(vids)} vidéos sélectionnées",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w", padx=4, pady=(4, 0))
+        apercu = ", ".join((x.get("title") or "?")[:30] for x in vids[:4])
+        ctk.CTkLabel(d, text=apercu + ("…" if len(vids) > 4 else ""), wraplength=420,
+                     justify="left", text_color=T_SECONDAIRE,
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=4)
+        ctk.CTkLabel(d, text="Ctrl+clic : ajouter ou retirer · Maj+clic : plage · "
+                             "clic simple : revenir à une vidéo.",
+                     text_color=T_DISCRET, font=ctk.CTkFont(size=10)).pack(anchor="w", padx=4, pady=(2, 6))
+
+        def titre(t):
+            ctk.CTkLabel(d, text=t, anchor="w", font=ctk.CTkFont(size=12, weight="bold")
+                         ).pack(anchor="w", padx=4, pady=(10, 2))
+
+        titre("Statut")
+        seg = ctk.CTkSegmentedButton(d, values=list(STATUTS))
+        seg.pack(fill="x", padx=4)
+        seg.configure(command=lambda choix: self._myvids_lot_statut(choix, seg))
+
+        titre("Classement")
+        ligne = ctk.CTkFrame(d, fg_color="transparent")
+        ligne.pack(fill="x", padx=4)
+        types = sorted(getattr(self, "type_map", {}) or {}, key=str.lower) or ["(aucun type)"]
+        menu_type = ctk.CTkOptionMenu(ligne, width=180, values=types, **STYLE_CHAMP)
+        menu_type.pack(side="left")
+        ctk.CTkButton(ligne, text=f"Appliquer le type à {len(vids)} vidéos", fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=lambda: self._myvids_lot_type(menu_type.get())
+                      ).pack(side="left", padx=(6, 0))
+        ctk.CTkButton(d, text="🏷️  Disciplines…", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+                      text_color=T_SUR_NEUTRE, command=self._myvids_lot_disciplines
+                      ).pack(anchor="w", padx=4, pady=(6, 0))
+
+        titre("Relations")
+        ctk.CTkButton(d, text="🗂  Chaînes et thèmes…", fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=self._myvids_lot_chaines).pack(anchor="w", padx=4)
+
+        ctk.CTkLabel(d, text="Zone sensible", anchor="w",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=T_ERREUR).pack(anchor="w", padx=4, pady=(14, 2))
+        possedees = len(vids) - n_co
+        if possedees:
+            ctk.CTkButton(d, text=f"🗑  Supprimer {possedees} vidéo(s)",
+                          fg_color=C_DESTRUCTIF, hover_color=C_DESTR_SURV,
+                          command=self._myvids_lot_supprimer).pack(anchor="w", padx=4)
+        if n_co:
+            ctk.CTkLabel(d, text=f"👥  {n_co} vidéo(s) en co-propriété : elles ne peuvent "
+                                 "pas être supprimées et seront ignorées par la "
+                                 "suppression.",
+                         text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11),
+                         wraplength=400, justify="left").pack(anchor="w", padx=4, pady=(4, 0))
+
+        ctk.CTkButton(d, text="Désélectionner tout", fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=self._myvids_vider_selection).pack(anchor="w", padx=4, pady=(14, 0))
+        self.myvids_msg = ctk.CTkLabel(d, text="", text_color=T_SECONDAIRE,
+                                       wraplength=420, justify="left")
+        self.myvids_msg.pack(anchor="w", padx=4, pady=(8, 4))
+
+    # — Actions de lot —
+
+    def _myvids_lot_statut(self, choix, seg=None):
+        vids = self._myvids_lot()
+        if not messagebox.askyesno("Statut en lot",
+                                   f"Passer {len(vids)} vidéo(s) en « {choix} » ?"):
+            if seg is not None:
+                seg.set("")
+            return
+        payload = STATUTS[choix]
+        self._myvids_lancer_lot(vids, lambda v: self.api.patch_video(v, payload),
+                                lambda v: v.update(payload), f"statut → {choix.lower()}")
+
+    def _myvids_lot_type(self, titre_type):
+        url = (getattr(self, "type_map", {}) or {}).get(titre_type)
+        if not url:
+            self._myvids_set_msg("Aucun type disponible.", T_ALERTE)
+            return
+        vids = self._myvids_lot()
+        if not messagebox.askyesno("Type en lot",
+                                   f"Donner le type « {titre_type} » à {len(vids)} vidéo(s) ?"):
+            return
+        self._myvids_lancer_lot(vids, lambda v: self.api.patch_video(v, {"type": url}),
+                                lambda v: v.update({"type": url}), f"type → {titre_type}")
+
+    def _myvids_liste_disciplines(self):
+        return [{"url": u, "title": t} for t, u in
+                sorted((getattr(self, "discipline_map", {}) or {}).items(),
+                       key=lambda x: x[0].lower())]
+
+    def _myvids_lot_disciplines(self):
+        disciplines = self._myvids_liste_disciplines()
+        if not disciplines:
+            self._myvids_set_msg("Aucune discipline définie sur la plateforme.", T_ALERTE)
+            return
+        vids = self._myvids_lot()
+
+        def appliquer(urls, libelles):
+            urls = list(urls)
+            texte = ", ".join(libelles) if libelles else "aucune"
+            if not messagebox.askyesno(
+                    "Disciplines en lot",
+                    f"Donner les disciplines « {texte} » à {len(vids)} vidéo(s) ?\n\n"
+                    "Leurs disciplines actuelles seront REMPLACÉES."):
+                return
+            self._myvids_lancer_lot(vids, lambda v: self.api.set_disciplines(v, urls),
+                                    lambda v: v.update({"discipline": urls}),
+                                    f"disciplines → {texte}")
+
+        ChannelPicker(self, disciplines, on_done=appliquer,
+                      title=f"Disciplines pour {len(vids)} vidéo(s)",
+                      consigne="Cochez les disciplines à donner aux vidéos "
+                               "sélectionnées. Elles REMPLACERONT leurs disciplines "
+                               "actuelles.",
+                      vide="Aucune discipline.")
+
+    def _myvids_lot_chaines(self):
+        vids = self._myvids_lot()
+
+        def appliquer(chaines, themes):
+            choix = messagebox.askyesnocancel(
+                "Chaînes et thèmes en lot",
+                f"{len(chaines)} chaîne(s) et {len(themes)} thème(s) pour "
+                f"{len(vids)} vidéo(s).\n\n"
+                "Oui : AJOUTER aux chaînes et thèmes existants de chaque vidéo.\n"
+                "Non : REMPLACER — les chaînes et thèmes existants seront perdus.\n"
+                "Annuler : ne rien faire.")
+            if choix is None:
+                return
+            mode = "ajouter" if choix else "remplacer"
+            dispo = bool(self.myvids_themes)
+
+            def action(v):
+                finales, th = calculer_chaines_themes(
+                    self._rel_urls(v.get("channel"), normalise=False),
+                    self._rel_urls(v.get("theme"), normalise=False),
+                    chaines, themes, mode, themes_disponibles=dispo)
+                self.api.assign_video_to_channels(v, finales, theme_urls=th)
+                v["_maj_lot"] = {"channel": finales, **({"theme": th} if th is not None else {})}
+
+            self._myvids_lancer_lot(vids, action,
+                                    lambda v: v.update(v.pop("_maj_lot", {})),
+                                    f"chaînes et thèmes ({'ajout' if choix else 'remplacement'})")
+
+        ChainesThemesPicker(
+            self, self.myvids_channels, self.myvids_themes, on_done=appliquer,
+            title=f"Chaînes et thèmes pour {len(vids)} vidéo(s)",
+            consigne="Cochez les chaînes et, si besoin, les thèmes à appliquer aux "
+                     "vidéos sélectionnées. Cocher un thème coche sa chaîne.")
+
+    def _myvids_lot_supprimer(self):
+        """Suppression en lot : les vidéos en CO-PROPRIÉTÉ sont ignorées (Pod
+        la refuse à un co-propriétaire). Double confirmation."""
+        ids = self._myvids_owner_ids()
+        vids = [x for x in self._myvids_lot()
+                if self._role_sur_video(x, ids) == "proprietaire"]
+        if not vids:
+            self._myvids_set_msg("Aucune vidéo supprimable dans la sélection.", T_ALERTE)
+            return
+        if not messagebox.askyesno(
+                "⚠️  Supprimer des vidéos",
+                f"Supprimer DÉFINITIVEMENT {len(vids)} vidéo(s) ?\n\n"
+                "Il n'y a pas de corbeille sur Pod."):
+            return
+        if not messagebox.askyesno("Confirmation",
+                                   f"Dernière confirmation : {len(vids)} vidéo(s) "
+                                   "seront effacées. Continuer ?"):
+            return
+
+        def apres(v):
+            if v in self.myvids_videos:
+                self.myvids_videos.remove(v)
+            if v.get("slug") in self.myvids_multi:
+                self.myvids_multi.remove(v.get("slug"))
+
+        self._myvids_lancer_lot(vids, lambda v: self.api.delete_video(v), apres,
+                                "suppression")
+
+    def _myvids_lancer_lot(self, vids, action, apres, libelle):
+        self._myvids_set_msg(f"⏳  {libelle} : {len(vids)} vidéo(s) en cours…", T_SECONDAIRE)
+        self._run(self._do_myvids_lot, list(vids), action, apres, libelle)
+
+    def _do_myvids_lot(self, vids, action, apres, libelle):
+        """(Thread) Applique `action` à chaque vidéo, INDÉPENDAMMENT : un échec
+        n'arrête pas les suivantes. `apres` met à jour le cache local."""
+        ok, echecs = 0, []
+        for v in vids:
+            try:
+                action(v)
+                apres(v)
+                ok += 1
+            except Exception as e:
+                echecs.append(v.get("title") or v.get("slug") or "?")
+                self._ui(self._log, f"❌ {libelle} — {v.get('slug')} : {e}")
+        self._ui(self._log, f"Lot « {libelle} » : {ok} réussie(s), {len(echecs)} échec(s).")
+        texte = f"✅  {libelle} : {ok} vidéo(s)."
+        if echecs:
+            texte += f" {len(echecs)} échec(s) : {', '.join(echecs[:3])}"
+            texte += "…" if len(echecs) > 3 else ""
+            texte += " (détail dans le Journal)."
+        self._ui(self._myvids_apply_filter)
+        self._ui(self._myvids_render_detail)
+        self._ui(self._myvids_set_msg, texte, T_ALERTE if echecs else T_SUCCES)
+
+    # — Une seule vidéo : disciplines, chaînes et thèmes —
+
+    def _myvids_edit_disciplines(self, v):
+        disciplines = self._myvids_liste_disciplines()
+        if not disciplines:
+            self._myvids_set_msg("Aucune discipline définie sur la plateforme.", T_ALERTE)
+            return
+        actuelles = {_norm_url(u) for u in self._rel_urls(v.get("discipline"), normalise=False)}
+        pre = {d["url"]: d["title"] for d in disciplines if _norm_url(d["url"]) in actuelles}
+
+        def appliquer(urls, libelles):
+            texte = ", ".join(libelles) if libelles else "aucune"
+            self._myvids_patch(v, {"discipline": list(urls)}, f"disciplines → {texte}")
+
+        ChannelPicker(self, disciplines, on_done=appliquer,
+                      title=f"Disciplines — {v.get('title', '')}", preselected=pre,
+                      consigne="Cochez les disciplines de cette vidéo. Décocher les retire.",
+                      vide="Aucune discipline.")
+
+    def _myvids_edit_channels(self, v):
+        def appliquer(chaines, themes):
+            self._myvids_patch(v, {"channel": list(chaines), "theme": list(themes)},
+                               f"{len(chaines)} chaîne(s), {len(themes)} thème(s)")
+
+        ChainesThemesPicker(
+            self, self.myvids_channels, self.myvids_themes, on_done=appliquer,
+            title=f"Chaînes et thèmes — {v.get('title', '')}",
+            chaines_pre=self._rel_urls(v.get("channel"), normalise=False),
+            themes_pre=self._rel_urls(v.get("theme"), normalise=False))
 
     def _myvids_select(self, v):
-        """Sélectionne une vidéo et affiche son panneau de détail."""
+        """Sélectionne une vidéo et affiche son panneau de détail.
+
+        Un clic simple ANNULE la sélection multiple : c'est le comportement de
+        tous les gestionnaires de fichiers."""
+        self.myvids_multi = []
+        self._myvids_ancre = v.get("slug")
         self.myvids_selected = v
         self._render_myvids_list()      # met à jour la surbrillance
         self._myvids_render_detail()
@@ -1486,11 +1922,14 @@ class App(_AppBase):
         """Reconstruit le panneau de droite pour la vidéo sélectionnée."""
         for w in self.myvids_detail.winfo_children():
             w.destroy()
+        if len(self.myvids_multi) >= 2:
+            self._myvids_render_lot()
+            return
         v = self.myvids_selected
         if not v:
             ctk.CTkLabel(self.myvids_detail,
                          text="Sélectionnez une vidéo dans la liste pour l'éditer.",
-                         text_color="gray").pack(pady=14)
+                         text_color=T_SECONDAIRE).pack(pady=14)
             return
 
         slug = v.get("slug", "?")
@@ -1525,7 +1964,7 @@ class App(_AppBase):
         self.myvids_title_entry.insert(0, v.get("title", ""))
         self.myvids_title_entry.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(ren, text="Renommer", width=90, fg_color=C_NEUTRE,
-                      command=lambda: self._myvids_rename(v)).pack(side="left", padx=6)
+                      command=lambda: self._myvids_rename(v), text_color=T_SUR_NEUTRE).pack(side="left", padx=6)
 
         # — Statut (bouton segmenté : les 3 états sont EXCLUSIFS) —
         #   Brouillon = is_draft True
@@ -1562,17 +2001,28 @@ class App(_AppBase):
         # VOLONTAIREMENT absent ici (fonction non offerte dans le Téléverseur).
 
         # — Type —
-        ctk.CTkLabel(self.myvids_detail, text="Type", anchor="w",
+        # Classement : type ET disciplines côte à côte, comme dans PodAdmin.
+        ctk.CTkLabel(self.myvids_detail, text="Classement", anchor="w",
                      font=ctk.CTkFont(size=12, weight="bold")).pack(
             anchor="w", padx=4, pady=(12, 2))
+        ligne_classement = ctk.CTkFrame(self.myvids_detail, fg_color="transparent")
+        ligne_classement.pack(fill="x", padx=4)
         cur_url = v.get("type")
         cur_url = cur_url.get("url") if isinstance(cur_url, dict) else cur_url
         url_to_title = {str(u).rstrip("/"): t for t, u in (self.type_map or {}).items()}
         cur_title = url_to_title.get(str(cur_url).rstrip("/"), "(non défini)")
         titles = sorted((self.type_map or {}).keys(), key=str.lower) or ["(aucun type)"]
-        type_menu = ctk.CTkOptionMenu(self.myvids_detail, width=220, values=titles)
+        type_menu = ctk.CTkOptionMenu(ligne_classement, width=200, values=titles, **STYLE_CHAMP)
         type_menu.set(cur_title if cur_title in titles else titles[0])
-        type_menu.pack(anchor="w", padx=4)
+        type_menu.pack(side="left")
+        ctk.CTkButton(ligne_classement, text="🏷️  Disciplines…", fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=lambda: self._myvids_edit_disciplines(v)).pack(side="left", padx=(6, 0))
+        par_url = {_norm_url(u): t for t, u in (getattr(self, "discipline_map", {}) or {}).items()}
+        noms = [par_url.get(_norm_url(u), "?") for u in self._rel_urls(v.get("discipline"), normalise=False)]
+        ctk.CTkLabel(self.myvids_detail, text="Disciplines : " + (", ".join(noms) or "aucune"),
+                     text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11), anchor="w",
+                     justify="left", wraplength=360).pack(anchor="w", padx=4, pady=(4, 0))
 
         def _apply_type(choice):
             """Applique le type choisi dans le menu à la vidéo affichée."""
@@ -1589,7 +2039,10 @@ class App(_AppBase):
         rel = ctk.CTkFrame(self.myvids_detail, fg_color="transparent")
         rel.pack(fill="x", padx=4)
         ctk.CTkButton(rel, text="👥  Co-propriétaires…", fg_color=C_NEUTRE,
-                      command=lambda: self._myvids_edit_owners(v)).pack(side="left")
+                      command=lambda: self._myvids_edit_owners(v), text_color=T_SUR_NEUTRE).pack(side="left")
+        ctk.CTkButton(rel, text="🗂  Chaînes et thèmes…", fg_color=C_NEUTRE,
+                      hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+                      command=lambda: self._myvids_edit_channels(v)).pack(side="left", padx=(6, 0))
 
         # — Sous-titres —
         ctk.CTkLabel(self.myvids_detail, text="Sous-titres", anchor="w",
@@ -1597,11 +2050,11 @@ class App(_AppBase):
             anchor="w", padx=4, pady=(12, 2))
         self.myvids_subs = ctk.CTkFrame(self.myvids_detail, fg_color="transparent")
         self.myvids_subs.pack(fill="x", padx=4)
-        ctk.CTkLabel(self.myvids_subs, text="Chargement…", text_color="gray",
+        ctk.CTkLabel(self.myvids_subs, text="Chargement…", text_color=T_SECONDAIRE,
                      font=ctk.CTkFont(size=11)).pack(anchor="w")
         ctk.CTkButton(self.myvids_detail, text="➕  Ajouter un sous-titre (.vtt / .srt)",
                       fg_color=C_NEUTRE,
-                      command=lambda: self._myvids_sub_add_dialog(v)).pack(
+                      command=lambda: self._myvids_sub_add_dialog(v), text_color=T_SUR_NEUTRE).pack(
             anchor="w", padx=4, pady=(6, 0))
         self._run(self._myvids_sub_load, v)   # charge les pistes en arrière-plan
 
@@ -1624,13 +2077,24 @@ class App(_AppBase):
         ctk.CTkLabel(self.myvids_detail, text="Zone sensible", anchor="w",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=T_ERREUR).pack(anchor="w", padx=4, pady=(14, 2))
-        ctk.CTkButton(self.myvids_detail, text="🗑  Supprimer cette vidéo",
-                      fg_color=C_DESTRUCTIF, hover_color=C_DESTR_SURV,
-                      command=lambda: self._myvids_delete(v)).pack(
-            anchor="w", padx=4, pady=(0, 8))
+        if self._role_sur_video(v, self._myvids_owner_ids()) == "coproprietaire":
+            # Pod refuse la suppression à un co-propriétaire : on l'explique
+            # au lieu de proposer un bouton qui échouerait.
+            ctk.CTkLabel(self.myvids_detail,
+                         text="👥  Vous êtes co-propriétaire de cette vidéo : vous "
+                              "pouvez la modifier, mais seul son propriétaire peut "
+                              "la supprimer.",
+                         text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11),
+                         wraplength=360, justify="left", anchor="w").pack(
+                anchor="w", padx=4, pady=(0, 8))
+        else:
+            ctk.CTkButton(self.myvids_detail, text="🗑  Supprimer cette vidéo",
+                          fg_color=C_DESTRUCTIF, hover_color=C_DESTR_SURV,
+                          command=lambda: self._myvids_delete(v)).pack(
+                anchor="w", padx=4, pady=(0, 8))
 
         # Zone de message du panneau
-        self.myvids_msg = ctk.CTkLabel(self.myvids_detail, text="", text_color="gray",
+        self.myvids_msg = ctk.CTkLabel(self.myvids_detail, text="", text_color=T_SECONDAIRE,
                                        font=ctk.CTkFont(size=11), wraplength=420,
                                        justify="left")
         self.myvids_msg.pack(anchor="w", padx=4, pady=(4, 8))
@@ -1648,7 +2112,7 @@ class App(_AppBase):
             webbrowser.open(f"{base}/video/{slug}/")
             self._myvids_set_msg(f"Ouverture de {slug} dans le navigateur…", "gray")
         except Exception as e:
-            self._myvids_set_msg(f"Impossible d'ouvrir le navigateur : {e}", "#f59e0b")
+            self._myvids_set_msg(f"Impossible d'ouvrir le navigateur : {message_utilisateur(e)}", T_ALERTE)
 
     # ── Modifications simples (PATCH) ──────────────────────────────────────
 
@@ -1669,12 +2133,12 @@ class App(_AppBase):
             self.api.patch_video(v, payload)
             v.update(payload)                      # met à jour le cache local
             self._ui(self._log, f"✏ {slug} : {msg}")
-            self._ui(self._myvids_set_msg, f"✅  {msg}", "#22c55e")
+            self._ui(self._myvids_set_msg, f"✅  {msg}", T_SUCCES)
             self._ui(self._myvids_render_detail)
             self._ui(self._render_myvids_list)
         except Exception as e:
             self._ui(self._log, f"❌ {slug} : {e}")
-            self._ui(self._myvids_set_msg, f"❌  {e}", "#ef4444")
+            self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
             self._ui(self._myvids_render_detail)
 
     def _myvids_edit_owners(self, v):
@@ -1691,53 +2155,6 @@ class App(_AppBase):
         """Enregistre les co-propriétaires choisis (PATCH additional_owners)."""
         self._run(self._do_myvids_patch, v, {"additional_owners": list(urls)},
                   f"{len(urls)} co-propriétaire(s)")
-
-    # ── Modification du type « en masse » ──────────────────────────────────
-
-    def _myvids_mass_set_type(self):
-        """Applique le type choisi à TOUTES les vidéos actuellement affichées."""
-        choice = self.myvids_mass_type.get()
-        new_url = (self.type_map or {}).get(choice)
-        vids = list(self.myvids_filtered)
-        if not new_url or not vids:
-            self._myvids_set_msg("Rien à appliquer (aucun type ou aucune vidéo affichée).",
-                                 "#f59e0b")
-            return
-        if not messagebox.askyesno(
-                "Type en masse",
-                f"Affecter le type « {choice} » à {len(vids)} vidéo(s) affichée(s) ?\n\n"
-                "Cette action écrase le type actuel de chacune."):
-            return
-        self._run(self._do_myvids_mass_set_type, vids, new_url, choice)
-
-    def _do_myvids_mass_set_type(self, vids, new_url, choice):
-        """(Thread) Applique le type à chaque vidéo affichée, avec bilan."""
-        new_n = str(new_url).rstrip("/")
-        ok = fail = skip = 0
-        for i, v in enumerate(vids, 1):
-            cur = v.get("type")
-            cur = cur.get("url") if isinstance(cur, dict) else cur
-            if str(cur).rstrip("/") == new_n:
-                skip += 1                          # déjà ce type : pas d'appel API
-                continue
-            try:
-                self.api.patch_video(v, {"type": new_url})
-                v["type"] = new_url                # MAJ cache local
-                ok += 1
-            except Exception as e:
-                fail += 1
-                self._ui(self._log, f"❌ {v.get('slug')} : {e}")
-            self._ui(self.myvids_status.configure, text=f"⏳  {i}/{len(vids)}…",
-                     text_color="gray")
-        self._ui(self.myvids_status.configure,
-                 text=f"✅  Type « {choice} » : {ok} modifiée(s), {skip} déjà OK, "
-                      f"{fail} échec(s).",
-                 text_color=T_SUCCES if not fail else "#f59e0b")
-        self._ui(self._log, f"Type en masse « {choice} » : {ok} modifiée(s), "
-                            f"{skip} inchangée(s), {fail} échec(s).")
-        self._ui(self._myvids_apply_filter)        # rafraîchit l'affichage
-
-    # ── Sous-titres (pistes) ───────────────────────────────────────────────
 
     def _myvids_sub_load(self, v):
         """(Thread) Charge les pistes de sous-titres de la vidéo puis les affiche."""
@@ -1763,7 +2180,7 @@ class App(_AppBase):
                          font=ctk.CTkFont(size=11)).pack(anchor="w")
             return
         if not tracks:
-            ctk.CTkLabel(self.myvids_subs, text="Aucun sous-titre.", text_color="gray",
+            ctk.CTkLabel(self.myvids_subs, text="Aucun sous-titre.", text_color=T_SECONDAIRE,
                          font=ctk.CTkFont(size=11)).pack(anchor="w")
             return
         langs = dict(SUBTITLE_LANGS)
@@ -1797,18 +2214,18 @@ class App(_AppBase):
 
         ctk.CTkLabel(win, text="Langue :").pack(padx=16, anchor="w")
         lang_labels = [f"{lbl} ({code})" for code, lbl in SUBTITLE_LANGS]
-        lang_menu = ctk.CTkOptionMenu(win, values=lang_labels, width=260)
+        lang_menu = ctk.CTkOptionMenu(win, values=lang_labels, width=260, **STYLE_CHAMP)
         lang_menu.set("Français (fr)")
         lang_menu.pack(padx=16, pady=(0, 8), anchor="w")
 
         ctk.CTkLabel(win, text="Type :").pack(padx=16, anchor="w")
         kind_menu = ctk.CTkOptionMenu(win, values=[lbl for _c, lbl in SUBTITLE_KINDS],
-                                      width=260)
+                                      width=260, **STYLE_CHAMP)
         kind_menu.set("Sous-titres")
         kind_menu.pack(padx=16, pady=(0, 8), anchor="w")
 
         path_var = {"p": None}
-        path_lbl = ctk.CTkLabel(win, text="Aucun fichier choisi.", text_color="gray",
+        path_lbl = ctk.CTkLabel(win, text="Aucun fichier choisi.", text_color=T_SECONDAIRE,
                                 font=ctk.CTkFont(size=11), wraplength=400, justify="left")
 
         def choose():
@@ -1821,7 +2238,7 @@ class App(_AppBase):
                 path_lbl.configure(text=os.path.basename(p), text_color="white")
 
         ctk.CTkButton(win, text="📄  Choisir un fichier .vtt / .srt",
-                      command=choose, fg_color=C_NEUTRE).pack(padx=16, pady=(4, 2), anchor="w")
+                      command=choose, fg_color=C_NEUTRE, text_color=T_SUR_NEUTRE).pack(padx=16, pady=(4, 2), anchor="w")
         path_lbl.pack(padx=16, anchor="w")
 
         def valider():
@@ -1848,11 +2265,11 @@ class App(_AppBase):
         try:
             self.api.add_subtitle(v, lang, kind, path)   # conversion .srt incluse
             self._ui(self._log, f"➕ Sous-titre ajouté ({lang}/{kind}) à {v.get('slug')}")
-            self._ui(self._myvids_set_msg, "✅  Sous-titre ajouté.", "#22c55e")
+            self._ui(self._myvids_set_msg, "✅  Sous-titre ajouté.", T_SUCCES)
             self._run(self._myvids_sub_load, v)
         except Exception as e:
             self._ui(self._log, f"❌ Ajout sous-titre {v.get('slug')} : {e}")
-            self._ui(self._myvids_set_msg, f"❌  {e}", "#ef4444")
+            self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
 
     def _myvids_sub_delete(self, v, track):
         """Supprime une piste de sous-titres après confirmation."""
@@ -1871,7 +2288,7 @@ class App(_AppBase):
             self._run(self._myvids_sub_load, v)
         except Exception as e:
             self._ui(self._log, f"❌ Suppression sous-titre : {e}")
-            self._ui(self._myvids_set_msg, f"❌  {e}", "#ef4444")
+            self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
 
     # ── Remplacer le fichier source + ré-encoder ───────────────────────────
 
@@ -1884,7 +2301,7 @@ class App(_AppBase):
           • > seuil : remplacement CHUNKÉ via la session web du compte véhicule
             DEPOT (statut d'équipe), qui finalise avec le slug cible."""
         if not self.api:
-            self._myvids_set_msg("Connectez-vous d'abord.", "#f59e0b")
+            self._myvids_set_msg("Connectez-vous d'abord.", T_ALERTE)
             return
         path = filedialog.askopenfilename(
             title="Choisir le nouveau fichier vidéo",
@@ -2028,17 +2445,17 @@ class App(_AppBase):
                              "sur le site à la fin de l'encodage (cela peut prendre un moment).")
             except Exception as e:
                 self._ui(self._myvids_set_msg,
-                         f"Fichier remplacé, mais encodage non lancé : {e}", "#f59e0b")
+                         f"Fichier remplacé, mais encodage non lancé : {message_utilisateur(e)}", T_ALERTE)
                 self._ui(self._log, f"❌ Encodage non lancé ({slug}) : {e}")
                 if modal:
                     self._ui(modal.finish, False,
-                             f"Fichier remplacé, mais le ré-encodage n'a pas pu être lancé : {e}")
+                             f"Fichier remplacé, mais le ré-encodage n'a pas pu être lancé : {message_utilisateur(e)}")
             self._ui(self._myvids_render_detail)
         except Exception as e:
-            self._ui(self._myvids_set_msg, f"❌  {e}", "#ef4444")
+            self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
             self._ui(self._log, f"❌ Remplacement {slug} : {e}")
             if modal:
-                self._ui(modal.finish, False, f"Le remplacement a échoué : {e}")
+                self._ui(modal.finish, False, f"Le remplacement a échoué : {message_utilisateur(e)}")
         finally:
             # Quoi qu'il arrive, la modale doit être déverrouillée : une fenêtre
             # modale restée bloquée rendrait l'application inutilisable.
@@ -2049,6 +2466,11 @@ class App(_AppBase):
 
     def _myvids_delete(self, v):
         """Supprime la vidéo après DOUBLE confirmation (irréversible)."""
+        # Défense en profondeur : le bouton est masqué pour un co-propriétaire,
+        # mais on refuse aussi ici — Pod renverrait de toute façon une erreur.
+        if self._role_sur_video(v, self._myvids_owner_ids()) == "coproprietaire":
+            self._myvids_set_msg("Seul le propriétaire peut supprimer cette vidéo.", T_ALERTE)
+            return
         if not messagebox.askyesno(
                 "⚠️  Supprimer la vidéo",
                 f"Supprimer DÉFINITIVEMENT « {v.get('title')} » ?\n\n"
@@ -2072,7 +2494,7 @@ class App(_AppBase):
             self._ui(self._myvids_apply_filter)
         except Exception as e:
             self._ui(self._log, f"❌ Suppression {slug} : {e}")
-            self._ui(self._myvids_set_msg, f"❌  {e}", "#ef4444")
+            self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
 
     def _build_tab_config(self):
         """Construit l'onglet Configuration (connexion API + choix de l'agent déposant)."""
@@ -2111,7 +2533,7 @@ class App(_AppBase):
                       hover_color=C_SUCCES_SURV, command=self._connect).pack(side="left")
         ctk.CTkButton(btn_row, text="🚪  Oublier le token / Se déconnecter", width=260,
                       fg_color=C_NEUTRE, hover_color=C_DESTR_SURV,
-                      command=self._forget_token).pack(side="left", padx=10)
+                      command=self._forget_token, text_color=T_SUR_NEUTRE).pack(side="left", padx=10)
         api_box.columnconfigure(1, weight=1)
 
         self.config_msg = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=12))
@@ -2134,9 +2556,9 @@ class App(_AppBase):
         self.agent_filter.grid(row=2, column=0, columnspan=2, padx=8, pady=8, sticky="ew")
         self.agent_filter.bind("<KeyRelease>", lambda e: self._render_users())
         ctk.CTkButton(agent_box, text="🔄  Recharger", width=130,
-                      command=lambda: self._run(self._load_all_users)).grid(row=2, column=2, padx=8, pady=8)
+                      command=lambda: self._run(self._load_all_users), fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).grid(row=2, column=2, padx=8, pady=8)
 
-        self.users_count_lbl = ctk.CTkLabel(agent_box, text="", text_color="gray",
+        self.users_count_lbl = ctk.CTkLabel(agent_box, text="", text_color=T_SECONDAIRE,
                                             font=ctk.CTkFont(size=11))
         self.users_count_lbl.grid(row=3, column=0, columnspan=3, padx=12, sticky="w")
 
@@ -2183,7 +2605,7 @@ class App(_AppBase):
         if not url or not token:
             self.config_msg.configure(text="URL et token requis.", text_color=T_ERREUR)
             return
-        self.config_msg.configure(text="⏳  Connexion…", text_color="gray")
+        self.config_msg.configure(text="⏳  Connexion…", text_color=T_SECONDAIRE)
         self._run(self._do_connect, url, token)
 
     def _do_connect(self, url, token):
@@ -2340,7 +2762,7 @@ class App(_AppBase):
                 msg.configure(text="Merci de coller le token avant de continuer.",
                               text_color=T_ERREUR)
                 return
-            msg.configure(text="⏳  Connexion…", text_color="gray")
+            msg.configure(text="⏳  Connexion…", text_color=T_SECONDAIRE)
 
             def on_ok():
                 # Connexion réussie → on ferme l'étape 1. L'étape 2 (choix du
@@ -2400,6 +2822,29 @@ class App(_AppBase):
         self.status_lbl.configure(text="Connecté" if ok else "Non connecté",
                                   text_color=T_SUCCES if ok else "#ef4444")
 
+    # Libellés du menu Discipline : explicite quand la table est vide (un menu
+    # vide se prend pour une panne de chargement).
+    AUCUNE_DISCIPLINE = "(aucune discipline définie)"
+    SANS_DISCIPLINE = "(sans discipline)"
+
+    def _rafraichir_menu_discipline(self):
+        titres = sorted(getattr(self, "discipline_map", {}), key=str.lower)
+        try:
+            if titres:
+                self.upload_discipline.configure(values=[self.SANS_DISCIPLINE] + titres)
+                if self.upload_discipline.get() not in [self.SANS_DISCIPLINE] + titres:
+                    self.upload_discipline.set(self.SANS_DISCIPLINE)
+            else:
+                self.upload_discipline.configure(values=[self.AUCUNE_DISCIPLINE])
+                self.upload_discipline.set(self.AUCUNE_DISCIPLINE)
+        except Exception as e:
+            self._log(f"Rafraîchissement du menu Discipline : {e}")
+
+    def _discipline_choisie(self) -> str:
+        """URL de la discipline choisie, ou "" (lue dans le thread principal)."""
+        return (getattr(self, "discipline_map", {}) or {}).get(
+            self.upload_discipline.get(), "")
+
     def _load_types(self):
         """(Thread) Charge les types de vidéo et les sites (champ requis à l'upload)."""
         try:
@@ -2415,6 +2860,15 @@ class App(_AppBase):
             self._ui(self._myvids_refresh_type_menu)
         except Exception as e:
             self._ui(self._log, f"Impossible de charger les types : {e}")
+        # Disciplines : même moment, même mécanique que dans PodAdmin.
+        try:
+            self.disciplines = self.api.get_disciplines()
+            self.discipline_map = {d.get("title"): d.get("url", "")
+                                   for d in self.disciplines if d.get("title")}
+        except Exception as e:
+            self.disciplines, self.discipline_map = [], {}
+            self._ui(self._log, f"Impossible de charger les disciplines : {e}")
+        self._ui(self._rafraichir_menu_discipline)
         # Sites (champ requis à l'upload sur instance multi-établissements)
         try:
             sites = self.api.get_sites()
@@ -2434,7 +2888,7 @@ class App(_AppBase):
                      text="Connectez-vous d'abord.", text_color=T_ALERTE)
             return
         self._ui(self.users_count_lbl.configure,
-                 text="⏳  Chargement de la liste des utilisateurs…", text_color="gray")
+                 text="⏳  Chargement de la liste des utilisateurs…", text_color=T_SECONDAIRE)
         self._ui(self._log, "Chargement des utilisateurs (/rest/users/)…")
         try:
             users = self.api.get_all_users()
@@ -2488,7 +2942,7 @@ class App(_AppBase):
         if not self.all_users:
             ctk.CTkLabel(self.agent_results,
                          text="Liste non chargée. Cliquez sur « Recharger ».",
-                         text_color="gray").pack(pady=10)
+                         text_color=T_SECONDAIRE).pack(pady=10)
             return
 
         matches = [u for u in self.all_users if not flt or flt in self._user_label(u).lower()]
@@ -2507,11 +2961,11 @@ class App(_AppBase):
         if len(matches) > CAP:
             ctk.CTkLabel(self.agent_results,
                          text=f"… +{len(matches) - CAP} autres. Affinez le filtre.",
-                         text_color="gray").pack(pady=4)
+                         text_color=T_SECONDAIRE).pack(pady=4)
         elif not matches:
             ctk.CTkLabel(self.agent_results,
                          text="Aucun résultat ne correspond au filtre.",
-                         text_color="gray").pack(pady=8)
+                         text_color=T_SECONDAIRE).pack(pady=8)
 
     def _pick_agent(self, user: dict):
         """Enregistre le compte choisi comme propriétaire par défaut des dépôts."""
@@ -2625,7 +3079,7 @@ class App(_AppBase):
         top.pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(top, text="📋  Journal", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         ctk.CTkButton(top, text="🗑 Effacer", width=100, fg_color=C_NEUTRE,
-                      hover_color=C_NEUTRE_SURV, command=self._clear_log).pack(side="right")
+                      hover_color=C_NEUTRE_SURV, command=self._clear_log, text_color=T_SUR_NEUTRE).pack(side="right")
         self.log_box = ctk.CTkTextbox(frame, font=ctk.CTkFont(family="Consolas", size=11))
         self.log_box.pack(fill="both", expand=True)
         self.log_box.configure(state="disabled")
@@ -3040,7 +3494,7 @@ class App(_AppBase):
 
         # — Bouton Fermer —
         ctk.CTkButton(win, text="Fermer", width=120,
-                      command=win.destroy).pack(pady=16)
+                      command=win.destroy, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(pady=16)
 
     # ═════════════════════════════════════════════════════════════════════
     #  FENÊTRE « AIDE »
@@ -3112,6 +3566,10 @@ class App(_AppBase):
              "Avant de lancer l'envoi, vous définissez des réglages appliqués à "
              "toutes les vidéos du lot :\n"
              "• Type de vidéo (capsule d'enseignement, tutoriel, etc.) ;\n"
+             "• Discipline (facultatif) : le domaine d'enseignement de la vidéo, "
+             "choisi dans la liste de l'université. Laissez « (sans discipline) » "
+             "si aucune ne convient ; « (aucune discipline définie) » signifie que "
+             "la liste n'a pas encore été créée sur la plateforme ;\n"
              "• Visibilité : « Brouillon/Privé » (la vidéo reste invisible au public) "
              "ou « Public » ;\n"
              "• « Lancer l'encodage après le téléversement » (cochée par défaut) : "
@@ -3160,28 +3618,41 @@ class App(_AppBase):
 
             ("8. Mes vidéos — gérer vos vidéos déposées",
              "L'onglet « Mes vidéos » affiche UNIQUEMENT les vidéos du compte "
-             "déposant sélectionné : vous ne voyez jamais celles des autres. "
-             "Cliquez sur « Actualiser » pour charger la liste, puis sur une vidéo "
-             "pour ouvrir son panneau de détail à droite.\\n\\n"
+             "déposant sélectionné — celles dont il est propriétaire, et celles "
+             "dont il est co-propriétaire (repérées par 👥 dans la liste). Vous ne "
+             "voyez jamais les vidéos des autres. "
+             "Cliquez sur « 🔄 Rafraîchir » pour charger la liste, puis sur une vidéo "
+             "pour ouvrir son panneau de détail à droite.\n\n"
              "Depuis ce panneau, vous pouvez : renommer la vidéo, changer son "
              "statut (brouillon / public / restreint) et son type, ajouter des "
              "co-propriétaires, gérer les sous-titres, remplacer le fichier vidéo, "
-             "ou supprimer la vidéo.\\n\\n"
+             "ou supprimer la vidéo.\n\n"
+             "Depuis la section Classement, « 🏷️ Disciplines… » choisit les "
+             "disciplines de la vidéo ; dans Relations, « 🗂 Chaînes et thèmes… » "
+             "la place dans des chaînes et leurs thèmes (cocher un thème coche sa "
+             "chaîne).\n\n"
+             "SÉLECTION MULTIPLE : Ctrl+clic ajoute ou retire une vidéo, Maj+clic "
+             "sélectionne une plage, « ☑ Tout sélectionner » prend toutes les "
+             "vidéos affichées. Le panneau de droite propose alors d'agir sur tout "
+             "le lot : statut, type, disciplines, chaînes et thèmes (en ajout ou en "
+             "remplacement), suppression. Une confirmation est toujours demandée. "
+             "Les vidéos en co-propriété (👥) sont ignorées par la suppression. "
+             "Un clic simple revient à une seule vidéo.\n\n"
              "Les filtres en haut (texte, chaîne, type, statut) permettent de "
              "retrouver rapidement une vidéo quand la liste est longue. Le bouton "
-             "« Ouvrir sur le site » affiche la vidéo dans votre navigateur."),
+             "« Ouvrir dans le navigateur » affiche la vidéo dans votre navigateur."),
 
             ("9. Remplacer & ré-encoder un fichier",
              "Cette action remplace le FICHIER VIDÉO d'une vidéo existante, sans rien "
              "changer d'autre : le titre, l'adresse (lien), les chaînes, les droits et "
              "les sous-titres sont conservés. Pratique pour corriger une vidéo déjà "
-             "partagée sans avoir à rediffuser un nouveau lien.\\n\\n"
+             "partagée sans avoir à rediffuser un nouveau lien.\n\n"
              "Choisissez le nouveau fichier, confirmez, puis LAISSEZ TRAVAILLER "
              "L'APPLICATION : une fenêtre « Veuillez patienter… » s'affiche avec "
              "l'avancement. Elle bloque volontairement le reste de l'application, car "
              "toute autre manipulation interromprait l'envoi. Ne la fermez pas : elle "
              "se déverrouille toute seule à la fin, et le ré-encodage est lancé "
-             "automatiquement.\\n\\n"
+             "automatiquement.\n\n"
              "Attention : l'ancien fichier est définitivement écrasé. Pendant le "
              "ré-encodage, la vidéo peut apparaître indisponible quelques minutes sur "
              "le site : c'est normal."),
@@ -3191,7 +3662,10 @@ class App(_AppBase):
              "DÉFINITIVEMENT la vidéo de la plateforme. Il n'y a pas de corbeille sur "
              "Pod : une suppression est irréversible. Une double confirmation est "
              "demandée. En cas de doute, préférez passer la vidéo en « brouillon » : "
-             "elle devient invisible sans être perdue."),
+             "elle devient invisible sans être perdue.\n\n"
+             "Seul le PROPRIÉTAIRE peut supprimer une vidéo. Sur une vidéo dont "
+             "vous êtes co-propriétaire (👥), le bouton n'apparaît pas : vous pouvez "
+             "la modifier, mais pas la supprimer."),
 
             ("11. En cas d'échec réseau (relance)",
              "Sur les gros fichiers, l'envoi peut échouer à cause d'une coupure "
@@ -3222,7 +3696,25 @@ class App(_AppBase):
              "Le bouton « Oublier le token / Se déconnecter » (onglet Configuration) "
              "efface le token de ce poste."),
 
-            ("14. Problèmes courants",
+            ("14. Mises à jour",
+             "Au démarrage, l'application vérifie s'il existe une version plus "
+             "récente. Si c'est le cas, un bandeau apparaît en bas de la barre "
+             "latérale avec un bouton « Télécharger » : installez la nouvelle "
+             "version quand cela vous convient.\n\n"
+             "Certaines mises à jour sont OBLIGATOIRES : une fenêtre « Mise à jour "
+             "requise » s'affiche alors dès l'ouverture et l'application ne peut "
+             "plus être utilisée. Cliquez sur « Télécharger la mise à jour », "
+             "installez-la, puis relancez l'application. « Quitter » ferme "
+             "l'application si vous devez le faire plus tard. Cette fenêtre "
+             "réapparaît tant que la mise à jour n'est pas installée, même sans "
+             "connexion internet."),
+
+            ("15. Mode clair ou sombre",
+             "Le bouton en bas de la barre latérale bascule entre le mode clair et "
+             "le mode sombre. Votre choix est mémorisé pour les prochaines "
+             "ouvertures."),
+
+            ("16. Problèmes courants",
              "• « 0 utilisateur » lors du chargement des comptes : le token n'a pas le "
              "droit de lister les utilisateurs. Le dépôt reste possible, mais la "
              "recherche de comptes est limitée — voyez avec le service informatique.\n"
@@ -3246,7 +3738,335 @@ class App(_AppBase):
 
         # Bouton Fermer
         ctk.CTkButton(win, text="Fermer", width=120,
-                      command=win.destroy).pack(pady=(0, 14))
+                      command=win.destroy, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(pady=(0, 14))
+
+
+
+# Reprises de PodAdmin (sélecteurs éprouvés, même comportement).
+
+def _norm_url(u) -> str:
+    """URL d'une relation, sans barre finale ; accepte un dict {url: …}."""
+    if isinstance(u, dict):
+        u = u.get("url", "")
+    return str(u or "").rstrip("/")
+
+
+def calculer_chaines_themes(actuelles, actuels_themes, chaines, themes, mode,
+                            themes_disponibles: bool = True):
+    """Chaînes et thèmes FINAUX d'une vidéo lors d'une affectation en lot.
+
+    Renvoie (chaines_finales, themes_finaux) ; `themes_finaux` vaut None quand
+    le champ `theme` ne doit pas être modifié.
+
+      • « ajouter » : ajout aux chaînes et thèmes de CHAQUE vidéo (ils
+        diffèrent d'une vidéo à l'autre). Sans thème choisi, les thèmes
+        existants ne sont pas touchés.
+      • « remplacer » : la vidéo reçoit EXACTEMENT la sélection. Cela purge
+        aussi les thèmes des chaînes retirées — auparavant, seules les chaînes
+        étaient remplacées, et une vidéo sortie d'une chaîne gardait un thème
+        pointant vers une chaîne qu'elle n'avait plus.
+
+    ⚠️ Si les thèmes n'ont pas pu être chargés (`themes_disponibles` faux),
+    personne n'a pu en choisir : « remplacer » ne touche alors PAS au champ
+    `theme`, au lieu de tous les effacer sans qu'on ait pu les voir.
+
+    Dédoublonnage sur l'URL sans barre finale, en gardant la première forme
+    rencontrée : « …/1 » et « …/1/ » désignent la même chaîne."""
+    def fusion(*listes):
+        vues, sortie = set(), []
+        for liste in listes:
+            for u in liste or []:
+                n = _norm_url(u)
+                if n and n not in vues:
+                    vues.add(n)
+                    sortie.append(u)
+        return sortie
+
+    if mode == "ajouter":
+        finales = fusion(actuelles, chaines)
+        themes_finaux = fusion(actuels_themes, themes) if themes else None
+    else:
+        finales = fusion(chaines)
+        themes_finaux = fusion(themes) if themes_disponibles else None
+    return finales, themes_finaux
+
+
+class ChainesThemesPicker(ctk.CTkToplevel):
+    """Chaînes ET thèmes d'une vidéo, dans une seule fenêtre.
+
+    Chaque chaîne est suivie de ses thèmes, en retrait. Deux règles de
+    cohérence — les mêmes que l'onglet Chaînes & thèmes :
+      • cocher un thème coche aussi sa chaîne : un thème n'a de sens que si la
+        vidéo figure dans la chaîne qui le porte ;
+      • décocher une chaîne retire ses thèmes.
+
+    `on_done(urls_chaines, urls_themes)` au Valider. La sélection REMPLACE les
+    chaînes et thèmes de la vidéo.
+
+    ⚠️ Une chaîne ou un thème déjà présents sur la vidéo mais ABSENTS des
+    listes chargées (chaîne invisible, liste incomplète) sont conservés tels
+    quels : les perdre en silence au premier Valider serait une destruction
+    que rien à l'écran ne laisse deviner."""
+
+    def __init__(self, master, channels, themes, on_done,
+                 title="Chaînes et thèmes", chaines_pre=None, themes_pre=None,
+                 consigne="Cochez les chaînes où la vidéo doit apparaître, et "
+                          "si besoin ses thèmes. Cocher un thème coche sa chaîne."):
+        super().__init__(master)
+        self.on_done = on_done
+        self.channels = sorted(channels or [], key=lambda c: str(c.get("title", "")).lower())
+        self._url_chaine = {_norm_url(c.get("url")): c.get("url", "") for c in self.channels}
+        self._titre_chaine = {_norm_url(c.get("url")): c.get("title", "?") for c in self.channels}
+        self.themes_par_chaine: dict[str, list] = {}
+        self._url_theme, self._chaine_du_theme = {}, {}
+        for t in themes or []:
+            n_t, n_c = _norm_url(t.get("url")), _norm_url(t.get("channel"))
+            if not n_t:
+                continue
+            self._url_theme[n_t] = t.get("url", "")
+            self._chaine_du_theme[n_t] = n_c
+            self.themes_par_chaine.setdefault(n_c, []).append(t)
+        for liste in self.themes_par_chaine.values():
+            liste.sort(key=lambda t: str(t.get("title", "")).lower())
+
+        self.chaines = set()
+        for u in chaines_pre or []:
+            n = _norm_url(u)
+            self._url_chaine.setdefault(n, u if isinstance(u, str) else n)
+            self.chaines.add(n)
+        self.themes = set()
+        for u in themes_pre or []:
+            n = _norm_url(u)
+            self._url_theme.setdefault(n, u if isinstance(u, str) else n)
+            self.themes.add(n)
+
+        self.title(title)
+        self.geometry("500x580")
+        _focus_toplevel(self, master)
+        ctk.CTkLabel(self, text=consigne, justify="left",
+                     wraplength=460).pack(padx=14, pady=(14, 8), anchor="w")
+        self.filter = ctk.CTkEntry(self, placeholder_text="🔍 chaîne ou thème…")
+        self.filter.pack(fill="x", padx=14)
+        self.filter.bind("<KeyRelease>", lambda e: self._render_differe())
+        self.listbox = ctk.CTkScrollableFrame(self, height=360, fg_color=S_CARTE)
+        self.listbox.pack(fill="both", expand=True, padx=14, pady=8)
+        self.chosen_lbl = ctk.CTkLabel(self, text="", text_color=T_SECONDAIRE,
+                                       wraplength=460, justify="left")
+        self.chosen_lbl.pack(padx=14, anchor="w")
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=14, pady=10)
+        self.bouton_defaut = ctk.CTkButton(
+            btns, text="Valider", fg_color=C_SUCCES, hover_color=C_SUCCES_SURV,
+            command=self._validate)
+        self.bouton_defaut.pack(side="right")
+        ctk.CTkButton(btns, text="Annuler", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+                      command=self.destroy, text_color=T_SUR_NEUTRE).pack(side="right", padx=8)
+        self._render()
+        self._update_chosen()
+
+    def _render_differe(self):
+        job = getattr(self, "_render_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._render_job = self.after(FILTER_DELAY_MS, self._render)
+
+    def _render(self):
+        """Chaînes filtrées, chacune suivie de ses thèmes en retrait.
+
+        Une chaîne s'affiche si son titre OU l'un de ses thèmes correspond au
+        filtre ; dans le second cas, seuls les thèmes correspondants sont
+        montrés, pour qu'on retrouve un thème sans connaître sa chaîne."""
+        flt = self.filter.get().strip().lower()
+        for w in self.listbox.winfo_children():
+            w.destroy()
+        affiches = 0
+        for c in self.channels:
+            n_c = _norm_url(c.get("url"))
+            titre = str(c.get("title", "?"))
+            themes = self.themes_par_chaine.get(n_c, [])
+            chaine_ok = not flt or flt in titre.lower()
+            themes_vus = themes if chaine_ok else [
+                t for t in themes if flt in str(t.get("title", "")).lower()]
+            if not chaine_ok and not themes_vus:
+                continue
+            affiches += 1
+            sel = n_c in self.chaines
+            ctk.CTkButton(self.listbox, text=("☑  " if sel else "☐  ") + titre,
+                          anchor="w", height=H_NORMAL,
+                          fg_color=S_SELECTION if sel else "transparent",
+                          text_color=("gray10", "gray90"), hover_color=("gray75", "gray28"),
+                          font=ctk.CTkFont(size=12, weight="bold"),
+                          command=lambda n=n_c: self._toggle_chaine(n)).pack(fill="x", pady=1)
+            for t in themes_vus:
+                n_t = _norm_url(t.get("url"))
+                sel_t = n_t in self.themes
+                ctk.CTkButton(self.listbox,
+                              text=("☑  " if sel_t else "☐  ") + "↳ " + str(t.get("title", "?")),
+                              anchor="w", height=H_COMPACT,
+                              fg_color=S_SELECTION if sel_t else "transparent",
+                              text_color=T_SECONDAIRE, hover_color=("gray75", "gray28"),
+                              font=ctk.CTkFont(size=11),
+                              command=lambda nt=n_t: self._toggle_theme(nt)
+                              ).pack(fill="x", padx=(28, 0), pady=0)
+        if not affiches:
+            ctk.CTkLabel(self.listbox, text="Aucune chaîne.",
+                         text_color=T_SECONDAIRE).pack(pady=8)
+
+    def _toggle_chaine(self, n_c: str):
+        if n_c in self.chaines:
+            self.chaines.discard(n_c)
+            # Décocher une chaîne retire ses thèmes.
+            self.themes = {t for t in self.themes if self._chaine_du_theme.get(t) != n_c}
+        else:
+            self.chaines.add(n_c)
+        self._render()
+        self._update_chosen()
+
+    def _toggle_theme(self, n_t: str):
+        if n_t in self.themes:
+            self.themes.discard(n_t)
+        else:
+            self.themes.add(n_t)
+            n_c = self._chaine_du_theme.get(n_t)
+            if n_c:
+                self.chaines.add(n_c)       # cocher un thème coche sa chaîne
+        self._render()
+        self._update_chosen()
+
+    def _update_chosen(self):
+        nc, nt = len(self.chaines), len(self.themes)
+        if not nc:
+            texte = "Sélection : aucune chaîne"
+        else:
+            noms = sorted(self._titre_chaine.get(n, "(chaîne non listée)") for n in self.chaines)
+            texte = f"Sélection : {nc} chaîne(s), {nt} thème(s) — " + ", ".join(noms[:4])
+            if nc > 4:
+                texte += "…"
+        self.chosen_lbl.configure(text=texte)
+
+    def _validate(self):
+        """Renvoie les URLs d'origine. Un thème dont la chaîne n'est plus
+        cochée est écarté ; un thème dont la chaîne est INCONNUE (hors des
+        listes chargées) est conservé, faute de pouvoir juger."""
+        chaines = [self._url_chaine.get(n, n) for n in sorted(self.chaines)]
+        themes = [self._url_theme.get(n, n) for n in sorted(self.themes)
+                  if self._chaine_du_theme.get(n) is None
+                  or self._chaine_du_theme.get(n) in self.chaines]
+        try:
+            self.on_done(chaines, themes)
+        finally:
+            self.destroy()
+
+
+class ChannelPicker(ctk.CTkToplevel):
+    """Sélecteur multi-chaînes (sur le modèle d'OwnerPicker).
+    `channels` : liste de dicts {url, title}. `on_done(urls, labels)` au Valider."""
+
+    def __init__(self, master, channels, on_done, title="Chaînes",
+                 preselected: dict | None = None,
+                 consigne: str = "Cochez les chaînes où la vidéo doit apparaître.",
+                 vide: str = "Aucune chaîne."):
+        """Construit la fenêtre de sélection (liste à cocher + filtre).
+
+        Générique malgré son nom : elle coche n'importe quels éléments
+        `{url, title}`. Elle sert aussi aux DISCIPLINES, qui ont la même forme
+        et qu'une vidéo peut porter en plusieurs exemplaires — d'où les
+        paramètres `consigne` et `vide`, plutôt qu'une seconde fenêtre
+        quasi identique à maintenir."""
+        super().__init__(master)
+        self._vide = vide
+        self.on_done = on_done
+        self.channels = channels or []
+        self.selected: dict[str, str] = dict(preselected or {})   # url → titre
+        self.title(title)
+        self.geometry("460x520")
+        _focus_toplevel(self, master)
+
+        ctk.CTkLabel(self, text=consigne, justify="left",
+                     wraplength=420).pack(padx=14, pady=(14, 8), anchor="w")
+
+        self.filter = ctk.CTkEntry(self, placeholder_text="🔍 titre…")
+        self.filter.pack(fill="x", padx=14)
+        # Temporisation : évite de reconstruire toute la liste à chaque caractère.
+        self.filter.bind("<KeyRelease>", lambda e: self._render_differe())
+
+        self.listbox = ctk.CTkScrollableFrame(self, height=320, fg_color=S_CARTE)
+        self.listbox.pack(fill="both", expand=True, padx=14, pady=8)
+
+        self.chosen_lbl = ctk.CTkLabel(self, text="Sélection : aucune", text_color=T_SECONDAIRE,
+                                       wraplength=420, justify="left")
+        self.chosen_lbl.pack(padx=14, anchor="w")
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=14, pady=10)
+        # Désigné comme action par défaut : Entrée déclenche « Valider ».
+        self.bouton_defaut = ctk.CTkButton(
+            btns, text="Valider", fg_color=C_SUCCES, hover_color=C_SUCCES_SURV,
+            command=self._validate)
+        self.bouton_defaut.pack(side="right")
+        ctk.CTkButton(btns, text="Annuler", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+                      command=self.destroy, text_color=T_SUR_NEUTRE).pack(side="right", padx=8)
+
+        self._render()
+        self._update_chosen()
+
+    def _render_differe(self):
+        """Replanifie l'affichage après une courte pause de frappe (voir
+        App._debounce) : une seule reconstruction au lieu d'une par caractère."""
+        job = getattr(self, "_render_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        self._render_job = self.after(FILTER_DELAY_MS, self._render)
+
+    def _render(self):
+        """Affiche la liste filtrée (cases à cocher)."""
+        flt = self.filter.get().strip().lower()
+        for w in self.listbox.winfo_children():
+            w.destroy()
+        matches = [c for c in self.channels
+                   if not flt or flt in (c.get("title", "")).lower()]
+        for c in matches:
+            url = c.get("url", "")
+            sel = url in self.selected
+            ctk.CTkButton(self.listbox, text=("☑  " if sel else "☐  ") + c.get("title", "?"),
+                          anchor="w", height=28,
+                          fg_color=S_SELECTION if sel else "transparent",
+                          text_color=("gray10", "gray90"), hover_color=("gray75", "gray28"),
+                          font=ctk.CTkFont(size=12),
+                          command=lambda cc=c: self._toggle(cc)).pack(fill="x", pady=1)
+        if not matches:
+            ctk.CTkLabel(self.listbox, text=self._vide, text_color=T_SECONDAIRE).pack(pady=8)
+
+    def _toggle(self, c: dict):
+        """Coche/décoche une chaîne dans la sélection."""
+        url = c.get("url", "")
+        if not url:
+            return
+        if url in self.selected:
+            del self.selected[url]
+        else:
+            self.selected[url] = c.get("title", "?")
+        self._render()
+        self._update_chosen()
+
+    def _update_chosen(self):
+        """Met à jour le libellé récapitulant la sélection courante."""
+        if self.selected:
+            self.chosen_lbl.configure(text="Sélection : " + ", ".join(self.selected.values()),
+                                      text_color=T_SUCCES)
+        else:
+            self.chosen_lbl.configure(text="Sélection : aucune", text_color=T_SECONDAIRE)
+
+    def _validate(self):
+        """Renvoie la sélection à l'appelant (on_done) puis ferme la fenêtre."""
+        self.on_done(list(self.selected.keys()), list(self.selected.values()))
+        self.destroy()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -3322,7 +4142,7 @@ class ProgressModal(ctk.CTkToplevel):
         self.bar.set(0)
 
         # Détail chiffré sous la barre (Mo envoyés / Mo total)
-        self.detail_lbl = ctk.CTkLabel(self, text="", text_color="gray",
+        self.detail_lbl = ctk.CTkLabel(self, text="", text_color=T_SECONDAIRE,
                                        font=ctk.CTkFont(size=11))
         self.detail_lbl.pack(anchor="w", padx=20, pady=(4, 0))
 
@@ -3336,7 +4156,7 @@ class ProgressModal(ctk.CTkToplevel):
 
         # Bouton de fermeture : désactivé jusqu'à la fin de l'opération.
         self.close_btn = ctk.CTkButton(self, text="Fermer", width=110,
-                                       state="disabled", command=self._close_now)
+                                       state="disabled", command=self._close_now, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE)
         self.close_btn.pack(anchor="e", padx=20, pady=(10, 14))
 
         _focus_toplevel(self, master)      # au premier plan + modale (grab_set)
@@ -3382,7 +4202,7 @@ class ProgressModal(ctk.CTkToplevel):
         self.phase_lbl.configure(text=("✅  " if ok else "❌  ") + message,
                                  text_color=T_SUCCES if ok else "#ef4444")
         self.warn_lbl.configure(text="Opération terminée. Vous pouvez fermer cette fenêtre.",
-                                text_color="gray")
+                                text_color=T_SECONDAIRE)
         self.close_btn.configure(state="normal")
         try:
             self.grab_release()            # rend la main à la fenêtre principale
@@ -3447,18 +4267,18 @@ class OwnerPicker(ctk.CTkToplevel):
         self.filter = ctk.CTkEntry(bar, placeholder_text="🔍 nom / identifiant…")
         self.filter.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self.filter.bind("<KeyRelease>", lambda e: self._render())
-        ctk.CTkButton(bar, text="🔄", width=40, command=self._reload).pack(side="left")
+        ctk.CTkButton(bar, text="🔄", width=40, command=self._reload, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(side="left")
         # Pré-remplissage éventuel du filtre (suggestion de détection).
         if prefilter:
             self.filter.insert(0, prefilter)
 
-        self.count_lbl = ctk.CTkLabel(self, text="", text_color="gray", font=ctk.CTkFont(size=11))
+        self.count_lbl = ctk.CTkLabel(self, text="", text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11))
         self.count_lbl.pack(anchor="w", padx=14, pady=(4, 0))
 
         self.listbox = ctk.CTkScrollableFrame(self, height=320)
         self.listbox.pack(fill="both", expand=True, padx=14, pady=8)
 
-        self.chosen_lbl = ctk.CTkLabel(self, text="Sélection : aucun", text_color="gray",
+        self.chosen_lbl = ctk.CTkLabel(self, text="Sélection : aucun", text_color=T_SECONDAIRE,
                                        wraplength=460, justify="left")
         # Le récapitulatif de sélection n'a de sens qu'en mode multiple.
         if not self.single:
@@ -3470,12 +4290,12 @@ class OwnerPicker(ctk.CTkToplevel):
             # En sélection unique, un clic sur un compte valide directement :
             # le bouton « Valider » est inutile, on ne garde qu'« Annuler ».
             ctk.CTkButton(btns, text="Annuler", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
-                          command=self.destroy).pack(side="right")
+                          command=self.destroy, text_color=T_SUR_NEUTRE).pack(side="right")
         else:
             ctk.CTkButton(btns, text="Valider", fg_color=C_SUCCES, hover_color=C_SUCCES_SURV,
                           command=self._validate).pack(side="right")
             ctk.CTkButton(btns, text="Annuler", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
-                          command=self.destroy).pack(side="right", padx=8)
+                          command=self.destroy, text_color=T_SUR_NEUTRE).pack(side="right", padx=8)
 
         self.after(80, self._init_list)
 
@@ -3518,7 +4338,7 @@ class OwnerPicker(ctk.CTkToplevel):
             w.destroy()
         users = self.master_app.all_users
         if not users:
-            ctk.CTkLabel(self.listbox, text="Liste non disponible.", text_color="gray").pack(pady=10)
+            ctk.CTkLabel(self.listbox, text="Liste non disponible.", text_color=T_SECONDAIRE).pack(pady=10)
             return
         matches = [u for u in users if not flt or flt in self._label(u).lower()]
         CAP = 300
@@ -3535,12 +4355,12 @@ class OwnerPicker(ctk.CTkToplevel):
                           height=28, font=ctk.CTkFont(size=12),
                           command=lambda uu=u: self._toggle(uu)).pack(fill="x", pady=1)
         self.count_lbl.configure(text=f"{len(matches)} affiché(s) sur {len(users)} — "
-                                      f"{len(self.selected)} sélectionné(s)", text_color="gray")
+                                      f"{len(self.selected)} sélectionné(s)", text_color=T_SECONDAIRE)
         if len(matches) > CAP:
             ctk.CTkLabel(self.listbox, text=f"… affinez le filtre ({len(matches) - CAP} de plus)",
-                         text_color="gray").pack(pady=4)
+                         text_color=T_SECONDAIRE).pack(pady=4)
         elif not matches:
-            ctk.CTkLabel(self.listbox, text="Aucun résultat.", text_color="gray").pack(pady=8)
+            ctk.CTkLabel(self.listbox, text="Aucun résultat.", text_color=T_SECONDAIRE).pack(pady=8)
 
     def _toggle(self, u: dict):
         """Coche/décoche un compte (ou valide directement en mode sélection unique)."""
@@ -3565,7 +4385,7 @@ class OwnerPicker(ctk.CTkToplevel):
             self.chosen_lbl.configure(text="Sélection : " + ", ".join(self.selected.values()),
                                       text_color=T_SUCCES)
         else:
-            self.chosen_lbl.configure(text="Sélection : aucun", text_color="gray")
+            self.chosen_lbl.configure(text="Sélection : aucun", text_color=T_SECONDAIRE)
 
     def _validate(self):
         """Renvoie la sélection à l'appelant (on_done) puis ferme la fenêtre."""

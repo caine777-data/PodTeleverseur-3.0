@@ -778,3 +778,32 @@ class TestBoutonDeTelechargementToujoursPresent:
             "présence de l'URL")
         assert "UPDATE_FALLBACK_URL" in corps, (
             "aucune URL de repli n'est utilisée si info['url'] est vide")
+
+
+class TestInstalleurRemplaceLaV2:
+    """La v3 est destinée à remplacer la v2, depuis le même dépôt de releases.
+
+    ⚠️ Sans l'AppId de la v2, Windows ne reconnaît pas la v3 comme une mise à
+    jour : les deux coexisteraient dans la liste des programmes, avec deux
+    désinstalleurs. La chaîne doit être IDENTIQUE à l'octet près — la v2
+    s'écrit `{{…}}` et Inno Setup garde littéralement l'accolade finale
+    doublée : une version « corrigée » serait un autre identifiant."""
+
+    APPID_V2 = "AppId={{8F3A6C21-4D7B-4E2A-9C15-7B2E5D9A1C04}}"
+
+    def test_meme_appid_que_la_v2(self):
+        lignes = [l.strip() for l in _lire(".github/workflows/build.yml").split("\n")
+                  if l.strip().startswith("AppId=")]
+        assert lignes == [self.APPID_V2], f"AppId de l'installeur : {lignes}"
+
+    def test_version_de_l_installeur_lue_dans_le_code(self):
+        """Elle était écrite en dur (3.1.0) et restait fausse à chaque version."""
+        w = _lire(".github/workflows/build.yml")
+        assert "AppVersion=$ver" in w
+        assert "__version__.py" in w[w.index("Fabriquer l'installeur"):]
+
+    def test_meme_niveau_d_installation(self):
+        """L'AppId ne suffit pas : v2 et v3 doivent s'installer au même
+        niveau (profil utilisateur), sinon Inno ne voit pas l'installation
+        précédente."""
+        assert "PrivilegesRequired=lowest" in _lire(".github/workflows/build.yml")

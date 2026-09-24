@@ -202,8 +202,19 @@ N'affiche **que** les vidéos du propriétaire sélectionné. Le filtrage est
 demandé au serveur (paramètre `owner`) **et refait systématiquement côté
 client** : si l'instance ignorait ce paramètre, elle renverrait toutes les
 vidéos de la plateforme. ⚠️ Ne jamais supprimer le filtre client
-(`TestFiltreProprietaire`). Être co-propriétaire ne suffit pas : seul le
-propriétaire principal compte.
+(`TestFiltreProprietaire`). Depuis la 3.3.3, les vidéos dont le compte est
+**co-propriétaire** y entrent aussi (repère 👥). Pod réserve la suppression au
+propriétaire : le bouton est masqué sur ces vidéos, et `_myvids_delete` refuse
+aussi par sécurité.
+
+⚠️ Le filtre serveur `owner=` ne renvoie que les vidéos POSSÉDÉES. Les vidéos
+en co-propriété exigent le filtre `additional_owners`, ou à défaut une lecture
+complète — jamais le seul filtre `owner`.
+
+⚠️ Défaut corrigé en 3.3.3 : sur une URL de compte finissant par « / » (la
+forme de l'API), l'id numérique n'était jamais extrait, et une vidéo dont
+`owner` est l'URL n'était pas reconnue. Les tests passent désormais par la
+vraie fonction `_myvids_owner_ids`, et non par un ensemble fourni à la main.
 
 ⚠️ **Le filtre serveur est facultatif.** Le format accepté pour `owner` varie
 d'une instance à l'autre : sur videos.utoulouse.fr, `owner=<URL>` est refusé
@@ -211,3 +222,60 @@ d'une instance à l'autre : sur videos.utoulouse.fr, `owner=<URL>` est refusé
 forme, et son échec vidait tout l'onglet. L'application essaie désormais l'id
 numérique, l'URL, puis `owner__username`, et se rabat sur une lecture complète
 — toujours re-filtrée côté client (`TestFiltreServeurFacultatif`).
+
+
+## Discipline au téléversement (depuis la 3.3.0)
+
+Réglage commun au lot, à côté du Type, comme dans PodAdmin. **Facultatif** :
+l'imposer pousserait à choisir au hasard. Rattachée après la création de chaque
+vidéo, par PATCH avec une **liste** d'URLs ; un échec ne fait pas échouer le
+dépôt. Mémorisée pour la relance des échecs.
+
+⚠️ Placée en ligne 1 : la ligne 2, colonnes 2-3, porte déjà « Propriétaires
+additionnels », et Tk superpose sans prévenir deux widgets sur la même cellule.
+
+
+## Couleurs (depuis la 3.3.1)
+
+Mêmes règles que PodAdmin : utilitaires en gris (`C_NEUTRE`) avec texte sombre
+en mode clair (`T_SUR_NEUTRE` — du blanc sur ce gris donne 2,44:1, illisible),
+action de masse en orange, une seule action principale colorée par écran,
+menus et listes en `STYLE_CHAMP` / `STYLE_ZONE`. Aucune teinte seule : un test
+(`TestHierarchieDesCouleurs`) l'interdit.
+
+
+## Remplacement de la v2 (depuis la 3.3.2)
+
+La v3 publie dans le **même dépôt de releases** que la v2
+(`podteleverseur-releases`) et son installeur porte le **même AppId**
+Inno Setup : installée sur un poste en v2, elle la remplace sur place.
+
+⚠️ Conséquence de ce dépôt commun : publier une v3 y réécrit `version.json`
+en 3.x — tous les postes en v2 reçoivent alors le bandeau et téléchargent la
+v3, avec l'onglet « Mes vidéos ». Ne publier la v3 qu'au moment de la bascule ;
+cocher « obligatoire » bloquerait tous les postes encore en v2.
+
+
+## Sélection multiple dans « Mes vidéos » (depuis la 3.4.0)
+
+Ctrl+clic, Maj+clic (plage) et « ☑ Tout sélectionner ». Le panneau de lot
+propose : statut, type, disciplines, chaînes et thèmes (ajout ou remplacement,
+calcul `calculer_chaines_themes` repris de PodAdmin), suppression. Chaque action
+demande confirmation ; la suppression, une double confirmation.
+
+- ⚠️ La suppression en lot **ignore les vidéos en co-propriété** : Pod la refuse
+  à un co-propriétaire.
+- ⚠️ Chaque vidéo est traitée **indépendamment** : un échec n'arrête pas le lot,
+  le bilan compte réussites et échecs (détail au Journal).
+- ⚠️ CTkButton agit au **relâchement** du clic : les liaisons
+  `<Control-ButtonRelease-1>` / `<Shift-ButtonRelease-1>` doivent renvoyer
+  "break", sinon un Ctrl+clic déclenche aussi une sélection simple.
+
+Sur une vidéo seule : « 🏷️ Disciplines… » à côté du type (section
+Classement) et « 🗂 Chaînes et thèmes… » dans Relations. Les sélecteurs
+`ChannelPicker` et `ChainesThemesPicker` sont repris de PodAdmin à l'identique.
+
+
+La barre « Modifier en masse » a été retirée en 3.4.1 (comme dans PodAdmin) :
+le type d'un lot passe par le panneau de sélection, bouton « Appliquer le type
+à N vidéos » puis confirmation.
