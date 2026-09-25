@@ -479,3 +479,72 @@ class TestReattributionApres504:
         faux, _ = _depot_gros_fichier(module_app, monkeypatch, fichier_video,
                                       lambda m: [homonyme])
         assert faux.api.patches == []
+
+
+# ── Étape 7 : « Mes vidéos » invalidée après un dépôt réussi ───────────────
+
+class TestMesVideosApresDepot:
+    """Vraie fenêtre (fixture `app` du conftest) ; seul le chargement réseau
+    `_myvids_load` est remplacé par un compteur."""
+
+    PROPRIO = "https://pod.exemple.fr/rest/users/42"
+
+    @pytest.fixture
+    def fen(self, app, monkeypatch):
+        chargements = []
+        monkeypatch.setattr(app, "api", object())
+        monkeypatch.setattr(app, "_myvids_current_owner", lambda: (self.PROPRIO, "marie"))
+        monkeypatch.setattr(app, "_myvids_load", lambda: chargements.append(1))
+        monkeypatch.setattr(app, "items", [])
+        # État « déjà chargé », avec une sélection multiple en cours.
+        app.myvids_loaded = True
+        app.myvids_videos = [{"slug": "v0"}, {"slug": "v1"}]
+        app.myvids_filtered = list(app.myvids_videos)
+        app.myvids_multi = ["v0", "v1"]
+        app.myvids_selected = app.myvids_videos[0]
+        yield app, chargements
+        app.myvids_loaded = False
+        app.myvids_videos, app.myvids_filtered, app.myvids_multi = [], [], []
+        app.myvids_selected = None
+        app._show_tab("upload")
+        app.update()
+
+    def test_onglet_visible_recharge_immediatement(self, fen):
+        app, chargements = fen
+        app._show_tab("myvids")
+        app.update()
+        chargements.clear()
+        app._on_batch_done(1, 1)
+        assert chargements == [1]
+        assert "nouveau dépôt" in app.myvids_status.cget("text")
+
+    def test_onglet_cache_recharge_a_la_prochaine_ouverture(self, fen):
+        app, chargements = fen
+        app._show_tab("upload")
+        app.update()
+        chargements.clear()
+        app._on_batch_done(2, 3)
+        assert chargements == []                  # rien tant qu'il est caché
+        assert app.myvids_loaded is False
+        app._show_tab("myvids")
+        app.update()
+        assert chargements == [1]
+
+    def test_lot_entierement_echoue_sans_invalidation(self, fen):
+        app, chargements = fen
+        app._show_tab("myvids")
+        app.update()
+        chargements.clear()
+        app._on_batch_done(0, 2)
+        assert chargements == []
+        assert app.myvids_loaded is True
+        assert app.myvids_multi == ["v0", "v1"]
+
+    def test_selection_multiple_videe(self, fen):
+        app, _ = fen
+        app._show_tab("upload")
+        app.update()
+        app._on_batch_done(1, 1)
+        assert app.myvids_multi == []
+        assert app.myvids_selected is None
+        assert app.myvids_videos == [] and app.myvids_filtered == []

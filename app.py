@@ -1068,6 +1068,11 @@ class App(_AppBase):
             # Tout est passé : on masque le bouton.
             self.retry_btn.pack_forget()
 
+        # Au moins une vidéo déposée : « Mes vidéos » n'est plus à jour. Un lot
+        # entièrement échoué n'a rien changé côté serveur : on n'invalide pas.
+        if ok:
+            self._myvids_mark_stale()
+
     def _retry_failed(self):
         """Relance UNIQUEMENT les vidéos en échec, sans re-sélectionner de fichiers.
 
@@ -1308,6 +1313,38 @@ class App(_AppBase):
         except Exception:
             visible = False
         if visible and self.api and new_owner:
+            self._myvids_load()
+
+    def _myvids_mark_stale(self):
+        """Appelée après un dépôt réussi (thread principal). Même invalidation
+        que _myvids_notify_owner_changed, mais SANS le court-circuit « même
+        propriétaire » : le compte n'a pas changé, c'est son CONTENU qui a
+        changé. Sans elle, les vidéos qu'on vient de déposer n'apparaissaient
+        pas dans « Mes vidéos » avant un rafraîchissement manuel.
+          • rechargement immédiat si l'onglet est à l'écran ;
+          • sinon au prochain affichage (_myvids_on_shown voit loaded=False).
+        """
+        if not hasattr(self, "myvids_owner_url"):
+            return                       # onglet pas encore construit
+        self.myvids_loaded = False
+        self.myvids_selected = None
+        self.myvids_videos = []
+        self.myvids_filtered = []
+        # La sélection multiple désigne des vidéos de l'ANCIENNE liste : la
+        # garder ferait agir une action de lot sur des lignes disparues.
+        self.myvids_multi = []
+        if hasattr(self, "myvids_list"):
+            for w in self.myvids_list.winfo_children():
+                w.destroy()
+            self._myvids_render_detail()
+            self.myvids_status.configure(text="(à rafraîchir — nouveau dépôt)",
+                                         text_color=T_SECONDAIRE)
+        try:
+            visible = self.tabs["myvids"].winfo_ismapped()
+        except Exception:
+            visible = False
+        owner_url, _ = self._myvids_current_owner()
+        if visible and self.api and owner_url:
             self._myvids_load()
 
     def _myvids_on_shown(self):
