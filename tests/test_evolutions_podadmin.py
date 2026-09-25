@@ -225,3 +225,184 @@ class TestRepliSurEnvoiParMorceaux:
         faux = _lot(module_app, monkeypatch, fichier_video, api, seuil=GROS)
         assert FauxDepot.envois == [] and api.patches == []
         assert faux.items[0].done and faux.items[0].slug == "1-direct"
+
+
+# ── Écran de dépôt : terminées, relance, progression ───────────────────────
+#
+# Faux widgets plutôt qu'une nouvelle fenêtre App() : chaque instance Tk
+# supplémentaire aggrave les erreurs Tk intermittentes du poste Windows.
+
+class FauxWidget:
+    """Bouton / barre minimal : mémorise son texte et s'il est affiché."""
+
+    def __init__(self):
+        self.visible = False
+        self.texte = ""
+        self.options = {}
+        self.placements = 0          # nombre d'appels à pack (doublons visibles)
+
+    def pack(self, *a, **k):
+        self.visible = True
+        self.placements += 1
+
+    def pack_forget(self):
+        self.visible = False
+
+    def winfo_ismapped(self):
+        return self.visible
+
+    def configure(self, **k):
+        self.options.update(k)
+        self.texte = k.get("text", self.texte)
+
+    def set(self, v):
+        self.options["valeur"] = v
+
+
+def _item(m, nom, *, done=False, slug="", error=""):
+    it = m.UploadItem(os.path.join(tempfile.gettempdir(), nom))
+    it.done, it.slug, it.error = done, slug, error
+    return it
+
+
+def _ecran(m, items):
+    """Fausse instance portant les VRAIES méthodes de l'écran de dépôt."""
+    f = _Rien()
+    f.__dict__.update(items=items, journal=[], lancements=[])
+    for nom in ("purge_btn", "retry_btn", "launch_btn", "global_msg",
+                "file_progress", "file_progress_lbl", "batch_progress"):
+        setattr(f, nom, FauxWidget())
+    f.progression_visible = False
+    f._log = f.journal.append
+    f._refresh_list = lambda: None
+    f._run = lambda fn, *a: f.lancements.append(a)
+    for nom in ("_echecs_a_relancer", "_update_retry_button", "_maj_bouton_purge",
+                "_retirer_terminees", "_afficher_progression", "_masquer_progression",
+                "_on_batch_done", "_retry_failed", "_set_item_status"):
+        setattr(f, nom, getattr(m.App, nom).__get__(f))
+    return f
+
+
+class TestEchecsARelancer:
+
+    def test_seuls_les_vrais_echecs(self, module_app):
+        m = module_app
+        echec = _item(m, "echec.mp4", error="HTTP 500")
+        items = [_item(m, "ok.mp4", done=True),
+                 _item(m, "creee.mp4", slug="42-cours", error="réattribution échouée"),
+                 _item(m, "jamais.mp4"),
+                 echec]
+        assert _ecran(m, items)._echecs_a_relancer() == [echec]
+
+    def test_bouton_relance_compte_et_masque(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "a.mp4", error="x"), _item(m, "b.mp4", error="y"),
+                       _item(m, "c.mp4", slug="1-c", error="réattribution échouée")])
+        f._update_retry_button()
+        assert f.retry_btn.visible and "(2)" in f.retry_btn.texte
+        f.items = [_item(m, "d.mp4", done=True)]
+        f._update_retry_button()
+        assert not f.retry_btn.visible
+
+    def test_relance_ne_renvoie_que_les_echecs(self, module_app):
+        m = module_app
+        echec = _item(m, "echec.mp4", error="HTTP 500")
+        creee = _item(m, "creee.mp4", slug="42-cours", error="réattribution échouée")
+        creee.status = "⚠️ NON réattribuée"
+        f = _ecran(m, [echec, creee])
+        f.api = object()
+        f._last_owner_url, f._last_type_url = PROF, "https://pod.exemple.fr/rest/types/1/"
+        f._retry_failed()
+        assert echec.status == "en attente"
+        assert creee.status == "⚠️ NON réattribuée"        # alerte conservée
+        assert len(f.lancements) == 1
+        assert f.progression_visible                         # barres montrées
+
+    def test_relance_sans_echec_ne_lance_rien(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "ok.mp4", done=True)])
+        f.api = object()
+        f._last_owner_url, f._last_type_url = PROF, "https://pod.exemple.fr/rest/types/1/"
+        f._retry_failed()
+        assert f.lancements == []
+
+    def test_lot_saute_une_video_deja_creee(self, module_app, monkeypatch, fichier_video):
+        """Le doublon évité : une vidéo créée mais non réattribuée n'est pas
+        renvoyée, ni par « Lancer » ni par « Relancer les échecs »."""
+        api = APIEnvoiDirect(None)
+        m = module_app
+        monkeypatch.setattr(m, "PodChunkedSession", FauxDepot)
+        FauxDepot.envois = []
+        faux = _Rien()
+        it = m.UploadItem(fichier_video)
+        it.slug, it.error = "42-cours", "réattribution échouée"
+        faux.__dict__.update(items=[it], config_data={}, api=api, journal=[],
+                             additional_owner_urls=[], site_urls=[],
+                             common_contributors=[])
+        faux._ui = lambda fn, *a, **k: fn(*a, **k)
+        faux._log = faux.journal.append
+        faux._file_size = m.App._file_size
+        m.App._do_batch_upload(faux, PROF, "https://pod.exemple.fr/rest/types/1/")
+        assert api.envois_directs == 0 and FauxDepot.envois == []
+        assert not it.done
+
+
+class TestRetirerLesTerminees:
+
+    def test_bouton_affiche_le_nombre(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "a.mp4", done=True), _item(m, "b.mp4", done=True),
+                       _item(m, "c.mp4", error="x")])
+        f._maj_bouton_purge()
+        assert f.purge_btn.visible and "Retirer les 2 terminées" in f.purge_btn.texte
+        f.items = f.items[:1]
+        f._maj_bouton_purge()
+        assert "Retirer les 1 terminée" in f.purge_btn.texte
+        assert not f.purge_btn.texte.endswith("s")
+
+    def test_bouton_masque_sans_terminee(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "c.mp4", error="x")])
+        f.purge_btn.visible = True
+        f._maj_bouton_purge()
+        assert not f.purge_btn.visible
+
+    def test_retire_les_terminees_garde_les_echecs(self, module_app):
+        m = module_app
+        echec, attente = _item(m, "e.mp4", error="x"), _item(m, "w.mp4")
+        f = _ecran(m, [_item(m, "a.mp4", done=True), echec, attente])
+        f._retirer_terminees()
+        assert f.items == [echec, attente]
+
+
+class TestProgressionEtBilan:
+
+    def test_barres_masquees_au_repos_et_idempotentes(self, module_app):
+        m = module_app
+        f = _ecran(m, [])
+        f._afficher_progression()
+        f._afficher_progression()
+        assert f.progression_visible and f.file_progress.visible
+        # Un second pack ferait descendre la barre en fin de cadre, sous un
+        # autre widget : chaque barre ne doit être placée qu'une fois.
+        assert [w.placements for w in (f.file_progress, f.file_progress_lbl,
+                                       f.batch_progress)] == [1, 1, 1]
+        f._masquer_progression()
+        assert not f.progression_visible and not f.batch_progress.visible
+
+    def test_fin_de_lot_masque_les_barres(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "a.mp4", done=True)])
+        f._afficher_progression()
+        f._on_batch_done(1, 1)
+        assert not f.progression_visible
+        assert "Vous pouvez les retirer" in f.global_msg.texte
+        assert f.purge_btn.visible and not f.retry_btn.visible
+
+    def test_fin_de_lot_partielle(self, module_app):
+        m = module_app
+        f = _ecran(m, [_item(m, "a.mp4", done=True), _item(m, "b.mp4", error="x")])
+        f._on_batch_done(1, 2)
+        assert "1/2" in f.global_msg.texte
+        assert "retirer" not in f.global_msg.texte
+        assert f.retry_btn.visible and "(1)" in f.retry_btn.texte

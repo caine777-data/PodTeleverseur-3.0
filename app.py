@@ -393,6 +393,16 @@ class App(_AppBase):
                       fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
                       command=self._clear_items, text_color=T_SUR_NEUTRE).pack(side="left")
 
+        # « Retirer les terminées » (repris de PodAdmin) — n'apparaît que s'il
+        # y a de quoi retirer. Après un lot, les lignes envoyées n'ont plus
+        # d'usage, mais il fallait les supprimer UNE PAR UNE ; « Vider la
+        # liste » ne convient pas, car elle emporte aussi les échecs à relancer.
+        self.purge_btn = ctk.CTkButton(
+            sel, text="✅  Retirer les terminées", width=200,
+            fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+            text_color=T_SUR_NEUTRE, command=self._retirer_terminees)
+        # (pas de .pack ici : posé par `_maj_bouton_purge`)
+
         self.count_lbl = ctk.CTkLabel(sel, text="0 vidéo(s)", text_color=T_SECONDAIRE,
                                       font=ctk.CTkFont(size=11))
         self.count_lbl.pack(side="right")
@@ -514,21 +524,47 @@ class App(_AppBase):
                                        font=ctk.CTkFont(size=12))
         self.global_msg.pack(side="left", padx=14)
 
-        # Progression fichier courant
+        # — Progression (fichier courant + lot) —
+        #
+        # Les deux barres restaient affichées en permanence, à zéro : deux
+        # traits inertes qui n'informaient de rien tant qu'aucun envoi n'était
+        # en cours. Elles sont CRÉÉES ici mais pas placées :
+        # `_afficher_progression()` les montre au lancement d'un lot,
+        # `_masquer_progression()` les retire à la fin (repris de PodAdmin).
+        #
+        # ⚠️ Widgets créés une fois pour toutes et masqués par `pack_forget`,
+        # sans cadre conteneur vide : un CTkFrame vide transparent se dessine
+        # en CARRÉ NOIR sur macOS (ennui déjà rencontré dans PodAdmin).
         self.file_progress = ctk.CTkProgressBar(frame)
-        self.file_progress.pack(fill="x", pady=(8, 0))
         self.file_progress.set(0)
         self.file_progress_lbl = ctk.CTkLabel(frame, text="", text_color=T_SECONDAIRE,
                                               font=ctk.CTkFont(size=10))
-        self.file_progress_lbl.pack(anchor="w")
-
-        # Progression globale du lot
         self.batch_progress = ctk.CTkProgressBar(frame, progress_color=C_SUCCES)
-        self.batch_progress.pack(fill="x", pady=(4, 0))
         self.batch_progress.set(0)
+        self.progression_visible = False
 
         # État initial du propriétaire (reflète un éventuel compte déjà enregistré).
         self._refresh_owner_status()
+
+    def _afficher_progression(self):
+        """Fait apparaître les deux barres de progression (début d'un lot).
+        Idempotente : appelée deux fois, elle ne place rien en double."""
+        if self.progression_visible:
+            return
+        self.file_progress.pack(fill="x", pady=(8, 0))
+        self.file_progress_lbl.pack(anchor="w")
+        self.batch_progress.pack(fill="x", pady=(4, 0))
+        self.progression_visible = True
+
+    def _masquer_progression(self):
+        """Retire les barres de l'affichage (fin d'un lot). Elles ne sont pas
+        détruites : elles resserviront au lot suivant."""
+        if not self.progression_visible:
+            return
+        self.batch_progress.pack_forget()
+        self.file_progress_lbl.pack_forget()
+        self.file_progress.pack_forget()
+        self.progression_visible = False
 
     # ── Ajout de fichiers / dossier ──────────────────────────────────────
 
@@ -601,6 +637,54 @@ class App(_AppBase):
         self.items.clear()
         self._refresh_list()
 
+    def _retirer_terminees(self):
+        """Retire les vidéos ENVOYÉES, et elles seules. Les échecs restent :
+        ce sont eux qu'on voudra relancer, et les perdre obligerait à
+        re-sélectionner les fichiers un par un."""
+        avant = len(self.items)
+        self.items = [it for it in self.items if not it.done]
+        retirees = avant - len(self.items)
+        if retirees:
+            self._refresh_list()
+            self._log(f"{retirees} vidéo(s) envoyée(s) retirée(s) de la liste.")
+
+    def _maj_bouton_purge(self):
+        """Affiche « Retirer les N terminées » avec leur nombre, ou le cache.
+        Le nombre compte : il dit exactement ce qui va disparaître."""
+        bouton = getattr(self, "purge_btn", None)
+        if bouton is None:
+            return
+        n = sum(1 for it in self.items if it.done)
+        if n:
+            bouton.configure(text=f"✅  Retirer les {n} terminée{'s' if n > 1 else ''}")
+            if not bouton.winfo_ismapped():
+                bouton.pack(side="left", padx=(8, 0))
+        elif bouton.winfo_ismapped():
+            bouton.pack_forget()
+
+    def _echecs_a_relancer(self) -> list:
+        """Vidéos en ÉCHEC, qu'on peut renvoyer sans risque de doublon.
+
+        On se fonde sur l'état (booléen `done`, `slug`, `error`), jamais sur
+        le libellé affiché. Sont exclues :
+          • les vidéos déposées (`done`) ;
+          • celles qui EXISTENT déjà sur le serveur sans avoir été
+            réattribuées (`slug` connu) : les renvoyer créerait une SECONDE
+            vidéo, la première restant au nom du compte DEPOT ;
+          • celles jamais tentées (pas d'erreur) : ce ne sont pas des échecs."""
+        return [it for it in self.items
+                if not it.done and not it.slug and it.error]
+
+    def _update_retry_button(self):
+        """Affiche « Relancer les échecs (N) » s'il y a des échecs, sinon le masque."""
+        n = len(self._echecs_a_relancer())
+        if n:
+            self.retry_btn.configure(text=f"🔄  Relancer les échecs ({n})")
+            if not self.retry_btn.winfo_ismapped():
+                self.retry_btn.pack(side="left", padx=(8, 0), before=self.global_msg)
+        elif self.retry_btn.winfo_ismapped():
+            self.retry_btn.pack_forget()
+
     def _refresh_list(self):
         """Reconstruit le tableau des vidéos en attente (nom, titre éditable, état)."""
         for w in self.list_frame.winfo_children():
@@ -613,6 +697,7 @@ class App(_AppBase):
                           "Aucune vidéo.\nUtilisez « Ajouter des fichiers » ou « Ajouter un dossier ».")
             ctk.CTkLabel(self.list_frame, text=empty_text, text_color=T_SECONDAIRE).pack(pady=40)
             self.count_lbl.configure(text="0 vidéo(s)")
+            self._maj_bouton_purge()
             return
 
         # En-tête
@@ -659,6 +744,7 @@ class App(_AppBase):
             it.status_lbl.pack(side="right", padx=6)
 
         self.count_lbl.configure(text=f"{len(self.items)} vidéo(s)")
+        self._maj_bouton_purge()
 
     def _remove_item(self, item: UploadItem):
         """Retire une vidéo de la file et rafraîchit l'affichage."""
@@ -795,6 +881,7 @@ class App(_AppBase):
 
         self.launch_btn.configure(state="disabled")
         self.retry_btn.configure(state="disabled")
+        self._afficher_progression()
         self.batch_progress.set(0)
         self._last_is_draft = self.visibility_combo.get().startswith("Brouillon")
         self._last_do_encode = bool(self.encode_var.get())
@@ -949,6 +1036,12 @@ class App(_AppBase):
             # On saute les vidéos déjà téléversées avec succès (utile en relance).
             if it.done:
                 ok += 1
+                self._ui(self.batch_progress.set, idx / total)
+                continue
+            # Vidéo CRÉÉE mais non réattribuée (slug connu, pas « done ») :
+            # la renvoyer en créerait une seconde, la première restant au nom
+            # du compte DEPOT. Elle se règle à la main, pas par un renvoi.
+            if it.slug:
                 self._ui(self.batch_progress.set, idx / total)
                 continue
 
@@ -1120,19 +1213,21 @@ class App(_AppBase):
         self.retry_btn.configure(state="normal")
         self.file_progress.set(0)
         self.file_progress_lbl.configure(text="")
-        color=T_SUCCES if ok == total else "#f59e0b"
-        self.global_msg.configure(text=f"Terminé : {ok}/{total} vidéo(s) téléversée(s).", text_color=color)
+        self._masquer_progression()
+        reussite = (ok == total)
+        self.global_msg.configure(
+            text=(f"✅  Terminé : {ok} vidéo(s) téléversée(s). "
+                  f"Vous pouvez les retirer de la liste."
+                  if reussite else
+                  f"Terminé : {ok}/{total} vidéo(s) téléversée(s)."),
+            text_color=T_SUCCES if reussite else T_ALERTE)
         self._log(f"Lot terminé : {ok}/{total} réussis.")
 
-        # Nombre de vidéos encore en échec (non abouties).
-        nb_echecs = sum(1 for it in self.items if not it.done)
-        if nb_echecs:
-            # Affiche le bouton de relance avec le décompte.
-            self.retry_btn.configure(text=f"🔄  Relancer les échecs ({nb_echecs})")
-            self.retry_btn.pack(side="left", padx=(8, 0))
-        else:
-            # Tout est passé : on masque le bouton.
-            self.retry_btn.pack_forget()
+        # « Relancer les échecs (N) » : seulement les vrais échecs, jamais une
+        # vidéo déjà créée (voir _echecs_a_relancer).
+        self._update_retry_button()
+        # « Retirer les N terminées » : à jour avec le nouveau bilan.
+        self._maj_bouton_purge()
 
         # Au moins une vidéo déposée : « Mes vidéos » n'est plus à jour. Un lot
         # entièrement échoué n'a rien changé côté serveur : on n'invalide pas.
@@ -1153,13 +1248,22 @@ class App(_AppBase):
             self.global_msg.configure(text="Propriétaire ou type manquant pour la relance.",
                                       text_color=T_ALERTE)
             return
-        # Remet les échecs en « en attente » pour un affichage propre.
-        for it in self.items:
-            if not it.done:
-                self._set_item_status(it, "en attente", T_SECONDAIRE)
+        echecs = self._echecs_a_relancer()
+        if not echecs:
+            self.global_msg.configure(text="Aucune vidéo en échec.", text_color=T_SECONDAIRE)
+            return
+        # Remet les échecs en « en attente » pour un affichage propre. Une
+        # vidéo créée mais non réattribuée garde son alerte : elle ne sera pas
+        # renvoyée (le lot la saute, voir _do_batch_upload).
+        for it in echecs:
+            self._set_item_status(it, "en attente", T_SECONDAIRE)
         self.launch_btn.configure(state="disabled")
         self.retry_btn.configure(state="disabled")
-        self._log("Relance des vidéos en échec…")
+        self.retry_btn.pack_forget()
+        # La relance n'emprunte pas `_start_upload` : sans cet appel, les
+        # barres resteraient masquées pendant tout le renvoi.
+        self._afficher_progression()
+        self._log(f"Relance de {len(echecs)} vidéo(s) en échec…")
         self._run(self._do_batch_upload, owner_url, type_url,
                   getattr(self, "_last_discipline_url", ""),
                   self.visibility_combo.get().startswith("Brouillon"),
