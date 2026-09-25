@@ -107,3 +107,23 @@ class TestProprietaireEgaliteStricte:
         faux = _lot(module_app, monkeypatch, fichier_video, api, statut_final=504)
         assert [p["owner"] for _, p in api.patches] == [PROF]
         assert faux.items[0].done
+
+
+# ── Session DEPOT refusée hors HTTPS ───────────────────────────────────────
+
+class TestSessionDepotHTTPS:
+    """Le mot de passe du compte véhicule (partagé par tous les postes) part
+    dans le formulaire de login : jamais sur une adresse en clair."""
+
+    @pytest.mark.parametrize("url", ["http://pod.exemple.fr", "HTTP://pod.exemple.fr/",
+                                     "pod.exemple.fr", ""])
+    def test_adresse_non_https_refusee(self, url):
+        from pod_chunked import PodChunkedError, PodChunkedSession
+        with pytest.raises(PodChunkedError, match="https"):
+            PodChunkedSession(url, "DEPOT", "secret")
+
+    @pytest.mark.parametrize("url", ["https://pod.exemple.fr", "HTTPS://pod.exemple.fr/"])
+    def test_adresse_https_acceptee(self, url):
+        from pod_chunked import PodChunkedSession
+        s = PodChunkedSession(url, "DEPOT", "secret")
+        assert s._logged_in is False             # rien n'est ouvert à la création

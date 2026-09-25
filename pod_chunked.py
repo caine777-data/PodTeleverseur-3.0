@@ -117,6 +117,13 @@ class PodChunkedSession:
                  verify_ssl: bool = True):
         """Initialise la session web du compte véhicule (URL de base, identifiant, mot de passe)."""
         self.base_url = base_url.rstrip("/")
+        # Le mot de passe du compte véhicule part dans le formulaire de login,
+        # et ce compte est partagé par tous les postes : jamais sur une adresse
+        # en clair (repris de PodAdmin). On refuse AVANT toute connexion.
+        if not self.base_url.lower().startswith("https://"):
+            raise PodChunkedError(
+                "Adresse de l'instance refusée : elle doit commencer par "
+                "https:// (le mot de passe ne doit jamais circuler en clair).")
         self.username = username
         self.password = password
         self.verify_ssl = verify_ssl
