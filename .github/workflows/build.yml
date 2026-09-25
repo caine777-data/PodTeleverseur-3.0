@@ -48,6 +48,12 @@ on:
         required: false
         default: ""
 
+# Moindre privilège : par défaut, le jeton GITHUB_TOKEN de chaque job ne peut
+# que LIRE le dépôt. Les jobs de compilation n'ont rien à y écrire ; seul le
+# job « release » reçoit, plus bas, contents: write pour créer la Release.
+permissions:
+  contents: read
+
 jobs:
   # ─────────────────────────────── WINDOWS ───────────────────────────────
   build-windows:

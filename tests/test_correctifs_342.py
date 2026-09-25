@@ -582,3 +582,26 @@ class TestFiltreApresModification:
             app.myvids_statut.set("Tous statuts")
             app.myvids_videos, app.myvids_filtered = [], []
             app.myvids_selected = None
+
+
+# ── Étape 9 : permissions minimales du workflow ────────────────────────────
+
+class TestPermissionsWorkflow:
+    """On analyse le YAML réel (pas une recherche de sous-chaîne : le
+    commentaire du workflow mentionne lui-même « contents: write »)."""
+
+    @pytest.fixture
+    def workflow(self):
+        yaml = pytest.importorskip("yaml")
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(racine, ".github", "workflows", "build.yml"),
+                  encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def test_racine_en_lecture_seule(self, workflow):
+        assert workflow.get("permissions") == {"contents": "read"}
+
+    def test_seul_le_job_release_ecrit(self, workflow):
+        ecrivains = {nom for nom, job in workflow["jobs"].items()
+                     if (job.get("permissions") or {}).get("contents") == "write"}
+        assert ecrivains == {"release"}
