@@ -41,6 +41,14 @@ try:
 except ImportError:
     HAS_TOOLBELT = False
 
+# Délai des envois de fichier (POST de création, PATCH de remplacement) :
+# 30 s pour ÉTABLIR la connexion, puis 600 s maximum SANS RECEVOIR UN OCTET.
+# Ce n'est pas une durée totale : un envoi de plusieurs Go qui progresse ne
+# l'atteint jamais. Avec timeout=None, une connexion bloquée attendait
+# indéfiniment et la relance automatique (3 essais) ne se déclenchait jamais,
+# puisqu'aucune exception n'était levée.
+UPLOAD_TIMEOUT = (30, 600)
+
 
 class PodAPIError(Exception):
     """Erreur renvoyée par l'API Pod (avec code HTTP et corps de réponse)."""
@@ -364,14 +372,14 @@ class PodAPI:
                     monitor = MultipartEncoderMonitor(encoder, _cb)
                     headers = {"Content-Type": monitor.content_type}
                     r = self.session.post(f"{self.rest}/videos/", data=monitor,
-                                         headers=headers, timeout=None,
+                                         headers=headers, timeout=UPLOAD_TIMEOUT,
                                          verify=self.verify_ssl)
                 else:
                     # Repli sans streaming (charge en mémoire) si toolbelt absent
                     files = {"video": (filename, f, "application/octet-stream")}
                     data = {k: v for k, v in fields if k != "video"}
                     r = self.session.post(f"{self.rest}/videos/", data=data,
-                                         files=files, timeout=None,
+                                         files=files, timeout=UPLOAD_TIMEOUT,
                                          verify=self.verify_ssl)
                 # Succès réseau : on renvoie le JSON (peut lever si code HTTP >= 400,
                 # mais ce n'est PAS une erreur transitoire → pas de relance).
@@ -568,16 +576,19 @@ class PodAPI:
 
                     monitor = MultipartEncoderMonitor(encoder, _cb)
                     headers = {"Content-Type": monitor.content_type}
-                    # timeout=None : un gros PATCH peut être long ; on se repose
-                    # sur les ré-essais pour les vraies coupures.
+                    # Délai fini (UPLOAD_TIMEOUT) : un gros PATCH peut être long,
+                    # mais tant que des octets circulent le délai de lecture ne
+                    # court pas ; une connexion figée lève Timeout, ce qui
+                    # déclenche les ré-essais ci-dessous au lieu d'attendre à
+                    # l'infini.
                     r = self.session.patch(target, data=monitor, headers=headers,
-                                           timeout=None, verify=self.verify_ssl)
+                                           timeout=UPLOAD_TIMEOUT, verify=self.verify_ssl)
                 else:
                     # Repli sans requests-toolbelt : pas de progression fine,
                     # mais l'envoi fonctionne (requests gère le multipart).
                     files = {"video": (filename, f, "application/octet-stream")}
                     r = self.session.patch(target, files=files,
-                                           timeout=None, verify=self.verify_ssl)
+                                           timeout=UPLOAD_TIMEOUT, verify=self.verify_ssl)
                 return self._json(r)
             finally:
                 f.close()
