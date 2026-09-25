@@ -141,7 +141,7 @@ class App(_AppBase):
 
     Assemble l'interface (barre latérale + onglets Téléversement, Configuration,
     Journal…), gère la connexion à l'instance (token), le scan et le dépôt des
-    vidéos par lot, et — pour les fichiers > 500 Mo — la bascule vers le
+    vidéos par lot, et — pour les fichiers > 150 Mo — la bascule vers le
     téléversement par morceaux via le compte véhicule DEPOT puis la réattribution
     au propriétaire choisi. Toutes les opérations réseau tournent dans des threads
     séparés ; les mises à jour d'interface repassent par le thread principal via
@@ -3664,8 +3664,8 @@ class App(_AppBase):
              "suivante) : vous n'avez rien de particulier à faire. Évitez de fermer "
              "l'application pendant un envoi en cours."),
 
-            ("7. Gros fichiers (plus de 500 Mo)",
-             "Au-delà de 500 Mo, l'application bascule automatiquement sur un envoi "
+            ("7. Gros fichiers (plus de 150 Mo)",
+             "Au-delà de 150 Mo, l'application bascule automatiquement sur un envoi "
              "par petits morceaux, plus robuste pour les gros fichiers. C'est "
              "totalement transparent : vous déposez comme d'habitude, la vidéo finit "
              "bien au nom du propriétaire que vous avez choisi.\n\n"

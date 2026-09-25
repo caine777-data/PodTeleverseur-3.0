@@ -14,7 +14,7 @@ d'accès, réaffectation, inventaire, modération…) ont été retirés.
 
 - **📂 Téléversement** — dépôt par lot (glisser-déposer), titres éditables,
   propriétaires additionnels communs, lancement automatique de l'encodage.
-  Les gros fichiers (> 500 Mo) passent par le téléversement **par morceaux**
+  Les gros fichiers (> 150 Mo) passent par le téléversement **par morceaux**
   (chunké) pour absorber les coupures de la passerelle.
 - **🎞️ Mes vidéos** — gestion des vidéos **du propriétaire sélectionné**
   (uniquement les siennes) :

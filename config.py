@@ -42,7 +42,7 @@ VEHICLE_USERNAME = "DEPOT"
 VEHICLE_PASSWORD = "V&xehx7WB!iBWLoL%97HDjK&kg"
 
 # ── Bascule vers le téléversement par morceaux (chunked) ──────────────────
-CHUNK_THRESHOLD_BYTES = 500 * 1024 * 1024      # 500 Mo
+CHUNK_THRESHOLD_BYTES = 150 * 1024 * 1024      # 150 Mo
 CHUNK_SIZE_BYTES      = 2 * 1024 * 1024         # 2 Mo par morceau
 
 # ── Vérification « lancer puis vérifier » après un 504 de finalisation ────

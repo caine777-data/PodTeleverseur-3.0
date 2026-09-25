@@ -609,3 +609,25 @@ class TestPermissionsWorkflow:
         ecrivains = {nom for nom, job in workflow["jobs"].items()
                      if (job.get("permissions") or {}).get("contents") == "write"}
         assert ecrivains == {"release"}
+
+
+# ── Seuil d'envoi par morceaux : 150 Mo, et l'aide dit la même chose ───────
+
+class TestSeuilEnvoiParMorceaux:
+
+    def test_seuil_150_mo(self):
+        import config
+        assert config.CHUNK_THRESHOLD_BYTES == 150 * 1024 * 1024
+
+    def test_aide_alignee_sur_la_configuration(self):
+        """L'aide écrit le seuil en toutes lettres : s'il change dans
+        config.py sans elle, l'utilisateur lit un chiffre faux."""
+        import re
+        import config
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(racine, "app.py"), encoding="utf-8") as f:
+            source = f.read()
+        annonces = re.findall(r"Gros fichiers \(plus de (\d+) Mo\)|Au-delà de (\d+) Mo", source)
+        valeurs = {int(a or b) for a, b in annonces}
+        assert len(annonces) == 2, annonces
+        assert valeurs == {config.CHUNK_THRESHOLD_BYTES // 1024 // 1024}, valeurs

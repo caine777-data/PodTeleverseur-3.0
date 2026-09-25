@@ -70,21 +70,27 @@ code a été restauré. Tests dans `tests/test_correctifs_342.py`.
 | Filtre non recalculé après une modification (une vidéo passée en Public restait sous le filtre Brouillon) | `_do_myvids_patch` appelle `_myvids_apply_filter` | `TestFiltreApresModification` |
 | Workflow : jobs de compilation autorisés à écrire dans le dépôt | `permissions: contents: read` à la racine ; `release` garde `contents: write` | `TestPermissionsWorkflow` |
 
+**Seuil d'envoi par morceaux abaissé de 500 Mo à 150 Mo**
+(`config.CHUNK_THRESHOLD_BYTES`) : davantage de fichiers passent par la voie
+par morceaux, plus robuste face aux coupures de la passerelle. L'aide
+(rubrique 7) et le README annoncent le nouveau seuil ; un test vérifie que
+l'aide reste alignée sur la configuration.
+
 **Effet visible, accepté** : Pod dérive le slug (l'adresse) de la vidéo du nom
 de fichier transmis. Le marqueur apparaît donc dans l'adresse des vidéos
-déposées par morceaux (fichiers de plus de 500 Mo), par exemple
+déposées par morceaux (fichiers de plus de 150 Mo), par exemple
 `…/video/1234-cours-amphi_upid1a2b3c4d/`. Le **titre**, lui, reste correct
 (il est posé ensuite par PATCH).
 
 ## À tester sur l'instance
-0. **3.4.2** — Déposer un gros fichier (> 500 Mo) sur l'instance de TEST :
+0. **3.4.2** — Déposer un gros fichier (> 150 Mo) sur l'instance de TEST :
    vérifier que le slug porte le marqueur `upid…`, que le titre est propre et
    que la vidéo est bien réattribuée à l'enseignant choisi. Si possible,
    provoquer un 504 à la finalisation pour vérifier la réattribution par
    marqueur.
-1. Petit fichier (< 500 Mo) : la modale affiche « Étape 1/2 — Envoi… », la barre
+1. Petit fichier (< 150 Mo) : la modale affiche « Étape 1/2 — Envoi… », la barre
    se remplit, puis « Étape finale — Lancement du ré-encodage », puis le succès.
-2. Gros fichier (> 500 Mo) : même chose en 3 étapes (voie chunkée DEPOT).
+2. Gros fichier (> 150 Mo) : même chose en 3 étapes (voie chunkée DEPOT).
 3. Pendant l'envoi : vérifier qu'aucun clic n'est possible sur la fenêtre
    principale et que la croix ne ferme pas la modale.
 4. Cas 504 : la modale doit se clore avec le message « le serveur termine son
