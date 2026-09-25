@@ -154,3 +154,20 @@ class TestMethodesAdministrationRetirees:
                     if nom in self.NOMS:
                         trouves.append(f"{nom_fichier}:{n.lineno} {nom}")
         assert not trouves, trouves
+
+
+# ── Étape 3 : en-tête de pod_chunked.py ────────────────────────────────────
+
+class TestEnTetePodChunked:
+    """On lit les attributs du MODULE importé, pas le texte du fichier : un
+    commentaire ou une docstring mentionnant l'ancienne adresse ne doit ni
+    faire échouer ni faire passer le test."""
+
+    def test_contact_de_service(self):
+        import pod_chunked
+        assert pod_chunked.__contact__ == "support-pod@utoulouse.fr"
+
+    def test_version_alignee_sur_la_source_unique(self):
+        import pod_chunked
+        import __version__ as v
+        assert pod_chunked.__version__ == v.__version__

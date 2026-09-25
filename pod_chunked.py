@@ -50,9 +50,13 @@ ROBUSTESSE :
 from __future__ import annotations
 
 __author__      = "Cédric MONNA"
-__contact__     = "cedricmonna@gmail.com"
+# Adresse de service, pas une adresse personnelle : c'est elle que les
+# utilisateurs doivent joindre, quel que soit le mainteneur du moment.
+__contact__     = "support-pod@utoulouse.fr"
 __institution__ = "Université de Toulouse — MFCA"
-__version__     = "0.1.0"
+# Version lue dans la source unique, comme app.py et config.py : un « 0.1.0 »
+# écrit en dur ici ne suivait plus aucune livraison.
+from __version__ import __version__   # noqa: E402
 __date__        = "2026"
 __license__     = "Usage interne — Université de Toulouse"
 
