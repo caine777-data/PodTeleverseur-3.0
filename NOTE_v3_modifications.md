@@ -50,7 +50,38 @@ rendrait l'application inutilisable.
   classes documentées), commentaires uniquement — aucun changement fonctionnel
   (vérifié par comparaison du squelette AST avant/après).
 
+## 3.4.2 — correctifs de la 3.0.1 réintégrés
+
+La 3.0.1 (25/08/2026, à la suite d'un audit de sécurité) n'avait jamais été
+poussée sur le dépôt : les versions 3.1.0 à 3.4.1 ont été construites sans
+ses correctifs. Ils ont été réécrits sur le code 3.4.1. Chaque test a été
+éprouvé par mutation : le défaut a été réintroduit, le test a échoué, puis le
+code a été restauré. Tests dans `tests/test_correctifs_342.py`.
+
+| Défaut | Correctif | Test |
+|---|---|---|
+| Envois de fichier en `timeout=None` : une connexion figée attendait indéfiniment et la relance automatique ne se déclenchait jamais | `UPLOAD_TIMEOUT = (30, 600)` (connexion, silence maximal) sur le POST de création et le PATCH de remplacement, avec et sans requests-toolbelt | `TestDelaisReseauFinis` |
+| `set_user_staff` / `set_user_groups` présentes dans une appli d'enseignants | Supprimées (jamais appelées) | `TestMethodesAdministrationRetirees` |
+| En-tête de `pod_chunked.py` : adresse personnelle, version « 0.1.0 » écrite en dur | `support-pod@utoulouse.fr`, version lue dans `__version__.py` | `TestEnTetePodChunked` |
+| 🟠 Jeton envoyé à tout hôte désigné par le serveur (champ `next`, URL de vidéo…), y compris en `http://` | `_abs()` refuse toute URL absolue hors HTTPS ou d'un autre hôte que l'instance ; la pagination et le PATCH de remplacement y passent aussi | `TestJetonLimiteALInstance` |
+| 🔴 Position confirmée par le serveur adoptée telle quelle lors d'un envoi par morceaux (fichier corrompu) | Arrêt immédiat (`PodChunkedError`) si l'offset confirmé ≠ `end + 1`, sans envoyer la suite ni finaliser | `TestPositionEnvoiParMorceaux` |
+| 🔴 Après un 504, vidéo retrouvée par NOM DE FICHIER sur le compte DEPOT partagé : deux dépôts simultanés de même nom → mauvais propriétaire | Marqueur unique `upid` + 8 hex dans le nom transmis (création seulement) ; recherche sur ce marqueur ; si plusieurs vidéos le portent, **aucune** réattribution, alerte dans le Journal | `TestMarqueurDansLeNomTransmis`, `TestReattributionApres504` |
+| « Mes vidéos » pas rafraîchie après un dépôt | `_myvids_mark_stale()` (vide aussi la sélection multiple), appelée si au moins une vidéo a réussi | `TestMesVideosApresDepot` |
+| Filtre non recalculé après une modification (une vidéo passée en Public restait sous le filtre Brouillon) | `_do_myvids_patch` appelle `_myvids_apply_filter` | `TestFiltreApresModification` |
+| Workflow : jobs de compilation autorisés à écrire dans le dépôt | `permissions: contents: read` à la racine ; `release` garde `contents: write` | `TestPermissionsWorkflow` |
+
+**Effet visible, accepté** : Pod dérive le slug (l'adresse) de la vidéo du nom
+de fichier transmis. Le marqueur apparaît donc dans l'adresse des vidéos
+déposées par morceaux (fichiers de plus de 500 Mo), par exemple
+`…/video/1234-cours-amphi_upid1a2b3c4d/`. Le **titre**, lui, reste correct
+(il est posé ensuite par PATCH).
+
 ## À tester sur l'instance
+0. **3.4.2** — Déposer un gros fichier (> 500 Mo) sur l'instance de TEST :
+   vérifier que le slug porte le marqueur `upid…`, que le titre est propre et
+   que la vidéo est bien réattribuée à l'enseignant choisi. Si possible,
+   provoquer un 504 à la finalisation pour vérifier la réattribution par
+   marqueur.
 1. Petit fichier (< 500 Mo) : la modale affiche « Étape 1/2 — Envoi… », la barre
    se remplit, puis « Étape finale — Lancement du ré-encodage », puis le succès.
 2. Gros fichier (> 500 Mo) : même chose en 3 étapes (voie chunkée DEPOT).

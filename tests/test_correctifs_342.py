@@ -563,6 +563,11 @@ class TestFiltreApresModification:
             def patch_video(self, v, payload):
                 patches.append((v.get("slug"), payload))
 
+            def __getattr__(self, nom):
+                # Le panneau de détail charge les sous-titres dans un thread
+                # (get_tracks…) : on répond « rien » plutôt que de lever.
+                return lambda *a, **k: []
+
         monkeypatch.setattr(app, "api", API())
         app.myvids_videos = [
             {"slug": f"b{i}", "title": f"Brouillon {i}", "is_draft": True, "channel": []}
@@ -572,7 +577,6 @@ class TestFiltreApresModification:
             app._myvids_apply_filter()
             assert [v["slug"] for v in app.myvids_filtered] == ["b0", "b1", "b2"]
             cible = app.myvids_videos[1]
-            app.myvids_selected = cible
             app._do_myvids_patch(cible, {"is_draft": False}, "passée en Public")
             app.update()                          # exécute les app._ui(…) planifiés
             assert patches == [("b1", {"is_draft": False})]
