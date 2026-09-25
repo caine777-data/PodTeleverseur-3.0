@@ -3794,7 +3794,9 @@ class App(_AppBase):
              "Les doublons sont automatiquement ignorés. Chaque vidéo apparaît dans "
              "la liste avec un titre modifiable — corrigez-le avant l'envoi si besoin. "
              "Le bouton « Retirer » enlève une vidéo de la liste (sans la supprimer "
-             "de votre disque)."),
+             "de votre disque). Après un envoi, « ✅ Retirer les N terminées » enlève "
+             "d'un coup les vidéos envoyées et garde celles en échec, pour pouvoir "
+             "les relancer."),
 
             ("4. Réglages communs au lot",
              "Avant de lancer l'envoi, vous définissez des réglages appliqués à "
@@ -3826,8 +3828,9 @@ class App(_AppBase):
              "propriétaire s'applique à tout le lot."),
 
             ("6. Lancer le téléversement",
-             "Cliquez sur « Lancer le téléversement ». Une barre de progression "
-             "indique l'avancement du fichier en cours et du lot global. Chaque "
+             "Cliquez sur « Lancer le téléversement ». Deux barres de progression "
+             "apparaissent pendant l'envoi : l'avancement du fichier en cours et "
+             "celui du lot. Chaque "
              "vidéo passe par : envoi → (si la case est cochée) lancement de "
              "l'encodage. L'état de chaque vidéo s'affiche en face de son titre.\n\n"
              "Les gros fichiers sont gérés automatiquement (voir la rubrique "
@@ -3905,15 +3908,21 @@ class App(_AppBase):
 
             ("11. En cas d'échec réseau (relance)",
              "Sur les gros fichiers, l'envoi peut échouer à cause d'une coupure "
-             "réseau passagère — ce n'est pas un défaut de l'application. Deux "
+             "réseau passagère — ce n'est pas un défaut de l'application. Trois "
              "protections existent :\n"
              "• Relance automatique : chaque vidéo est réessayée jusqu'à 3 fois "
              "(le statut affiche « ⟳ essai 2 »). Ne vous inquiétez donc pas d'un "
              "échec momentané, l'application retente seule.\n"
+             "• Bascule automatique : si le serveur coupe un envoi direct (fréquent "
+             "sur une connexion lente, même pour un fichier de moins de 150 Mo), "
+             "l'application renvoie la vidéo par petits morceaux, sans rien vous "
+             "demander (le statut affiche « ⟳ envoi par morceaux »).\n"
              "• Bouton « 🔄 Relancer les échecs » : s'il reste des vidéos en échec "
              "après le lot, ce bouton apparaît avec leur nombre. Il ne retente que "
              "les échecs (les vidéos déjà réussies ne sont pas renvoyées) et "
-             "disparaît quand tout est passé.\n\n"
+             "disparaît quand tout est passé. Une vidéo « NON réattribuée » n'est "
+             "jamais renvoyée : elle existe déjà sur la plateforme, et la renvoyer "
+             "en créerait une seconde (voir la rubrique 7).\n\n"
              "Si une même vidéo échoue à chaque fois, c'est probablement une limite "
              "plus dure (taille, réseau de l'établissement) : signalez-le au "
              "support."),

@@ -82,12 +82,37 @@ déposées par morceaux (fichiers de plus de 150 Mo), par exemple
 `…/video/1234-cours-amphi_upid1a2b3c4d/`. Le **titre**, lui, reste correct
 (il est posé ensuite par PATCH).
 
+### Évolutions du dépôt reprises de PodAdmin 1.9.1
+
+Tests dans `tests/test_evolutions_podadmin.py`, chacun éprouvé par mutation.
+
+| Évolution | Pourquoi | Test |
+|---|---|---|
+| 🔴 Discipline posée sur l'**URL** de la vidéo, plus sur son slug | `/videos/<slug>/` peut répondre 404 : le classement échouait, seulement noté au Journal | `TestDisciplineParURL` |
+| 🔴 Propriétaire comparé par **égalité stricte** après un 504 | L'inclusion de chaîne confondait `/users/99` et `/users/999` et acceptait une vidéo sans propriétaire | `TestProprietaireEgaliteStricte` |
+| Session DEPOT refusée si l'adresse n'est pas en `https://` | Le mot de passe du compte partagé ne doit jamais circuler en clair | `TestSessionDepotHTTPS` |
+| **Repli automatique sur l'envoi par morceaux** après une coupure de l'envoi direct | La passerelle coupe un envoi qui dure plus d'une minute environ (SSLEOFError), quelle que soit la taille ; réessayer à l'identique échoue toujours. Un refus du serveur (400, 403…) n'est jamais rejoué | `TestReconnaissanceCoupure`, `TestRepliSurEnvoiParMorceaux` |
+| Un seul chemin de création par morceaux (`_deposer_par_morceaux`) | Dans PodAdmin, la copie du repli appelait mal la reprise après 504 (TypeError, puis doublon à la relance) | `TestRepliSurEnvoiParMorceaux` |
+| 🔴 « Relancer les échecs » ne renvoie plus une vidéo **déjà créée** | Une vidéo « NON réattribuée » n'était pas « terminée » : la relance en créait une seconde. Défaut trouvé à cette occasion, absent de PodAdmin | `TestEchecsARelancer` |
+| Bouton « ✅ Retirer les N terminées » | Repartir après un lot sans perdre les échecs à relancer | `TestRetirerLesTerminees` |
+| Barres de progression masquées au repos, bilan « Vous pouvez les retirer » | Deux barres vides en permanence n'informaient de rien | `TestProgressionEtBilan` |
+
+Non repris : la vérification du compte DEPOT avant l'envoi (ses identifiants
+sont embarqués dans `config.py`, toujours présents). À reprendre quand
+PodAdmin les aura commitées : interruption d'un dépôt, attente courte après
+un 502/503, verrouillage de la liste pendant l'envoi, détection des doublons
+de fichiers par clé normalisée.
+
 ## À tester sur l'instance
 0. **3.4.2** — Déposer un gros fichier (> 150 Mo) sur l'instance de TEST :
    vérifier que le slug porte le marqueur `upid…`, que le titre est propre et
    que la vidéo est bien réattribuée à l'enseignant choisi. Si possible,
    provoquer un 504 à la finalisation pour vérifier la réattribution par
-   marqueur.
+   marqueur. Vérifier aussi que la **discipline** choisie est bien rattachée
+   (défaut corrigé : elle pouvait être perdue sans alerte).
+0 bis. **3.4.2** — Sur une connexion lente, déposer un fichier de 100 à 150 Mo :
+   si l'envoi direct est coupé, le Journal doit afficher « Bascule automatique
+   sur l'envoi par morceaux » et la vidéo doit arriver au bon propriétaire.
 1. Petit fichier (< 150 Mo) : la modale affiche « Étape 1/2 — Envoi… », la barre
    se remplit, puis « Étape finale — Lancement du ré-encodage », puis le succès.
 2. Gros fichier (> 150 Mo) : même chose en 3 étapes (voie chunkée DEPOT).
