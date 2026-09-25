@@ -30,6 +30,7 @@ import os
 import re
 import time
 import requests
+from urllib.parse import urlsplit
 from typing import Callable, Optional
 
 try:
@@ -73,6 +74,9 @@ class PodAPI:
         # verify_ssl : vérification du certificat TLS (True en production).
         self.base_url = base_url.rstrip("/")
         self.rest = f"{self.base_url}/rest"          # racine de l'API REST (/rest)
+        # Hôte de référence : seules les URL absolues de CET hôte reçoivent le
+        # jeton (voir _abs).
+        self._netloc = urlsplit(self.base_url).netloc.lower()
         self.token = token
         self.verify_ssl = verify_ssl
         self.session = requests.Session()
@@ -84,9 +88,28 @@ class PodAPI:
     # ╚══════════════════════════════════════════════════════════════════╝
 
     def _abs(self, endpoint_or_url: str) -> str:
-        """Accepte un endpoint relatif (/videos/) OU une URL absolue de l'API."""
+        """Accepte un endpoint relatif (/videos/) OU une URL absolue de l'API.
+
+        Toute requête de la session porte le jeton (en-tête Authorization).
+        Or les URL absolues viennent souvent du SERVEUR : champ `next` de la
+        pagination, relations `owner`, `url` d'une vidéo, d'une chaîne, d'une
+        piste… Les suivre aveuglément enverrait le jeton à n'importe quel hôte
+        qu'une réponse désignerait, ou en clair si elle était en http://.
+        On n'accepte donc une URL absolue que si elle est en HTTPS et vise
+        EXACTEMENT l'hôte de l'instance configurée ; sinon PodAPIError, avant
+        toute émission."""
         s = str(endpoint_or_url)
-        return s if s.startswith("http") else f"{self.rest}{s}"
+        parties = urlsplit(s)
+        if not (parties.scheme or parties.netloc):
+            return f"{self.rest}{s}"                 # chemin relatif à l'API
+        if parties.scheme.lower() != "https":
+            raise PodAPIError(
+                f"URL refusée (schéma « {parties.scheme or '?'} », HTTPS exigé) : {s}")
+        if parties.netloc.lower() != self._netloc:
+            raise PodAPIError(
+                f"URL refusée (hôte « {parties.netloc} » différent de l'instance "
+                f"« {self._netloc} ») : {s}")
+        return s
 
     def _json(self, resp: requests.Response):
         """Transforme une réponse HTTP en données Python.
@@ -160,7 +183,11 @@ class PodAPI:
             data = self._json(r)
             if isinstance(data, dict):
                 items.extend(data.get("results", []))
-                url = data.get("next")     # URL absolue de la page suivante
+                # URL absolue de la page suivante, fournie par le serveur :
+                # validée par _abs (même hôte, HTTPS) AVANT la requête
+                # suivante, qui porterait sinon le jeton n'importe où.
+                suivante = data.get("next")
+                url = self._abs(suivante) if suivante else None
             else:
                 items.extend(data or [])
                 url = None
@@ -548,9 +575,10 @@ class PodAPI:
         if not os.path.isfile(file_path):
             raise PodAPIError(f"Fichier introuvable : {file_path}")
         endpoint = self._video_endpoint(video)
-        # L'endpoint peut être relatif (/videos/<id>/) ou déjà absolu (http…) :
-        # on construit dans tous les cas l'URL complète attendue par requests.
-        target = endpoint if str(endpoint).startswith("http") else f"{self.rest}{endpoint}"
+        # L'endpoint peut être relatif (/videos/<id>/) ou déjà absolu (champ
+        # `url` renvoyé par le serveur) : _abs construit l'URL complète et
+        # refuse un hôte étranger ou du http://, car ce PATCH porte le jeton.
+        target = self._abs(endpoint)
         filename = os.path.basename(file_path)
 
         def _one_attempt():

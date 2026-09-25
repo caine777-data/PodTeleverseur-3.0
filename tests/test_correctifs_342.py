@@ -171,3 +171,72 @@ class TestEnTetePodChunked:
         import pod_chunked
         import __version__ as v
         assert pod_chunked.__version__ == v.__version__
+
+
+# ── Étape 4 : le jeton ne part que vers l'instance configurée, en HTTPS ────
+
+class TestJetonLimiteALInstance:
+    """Toute requête porte le jeton. Une URL absolue venue du serveur (champ
+    `next`, `url` d'une vidéo…) ne doit être suivie que si elle vise l'hôte de
+    l'instance, en HTTPS ; sinon PodAPIError AVANT toute émission."""
+
+    def test_meme_hote_accepte(self):
+        api = _api()
+        u = "https://pod.exemple.fr/rest/videos/3/"
+        assert api._abs(u) == u
+        assert api._abs("/videos/") == "https://pod.exemple.fr/rest/videos/"
+
+    def test_hote_different_de_casse_accepte(self):
+        # Les noms d'hôte sont insensibles à la casse : pas de faux refus.
+        api = _api()
+        assert api._abs("https://POD.Exemple.fr/rest/x/")
+
+    @pytest.mark.parametrize("url", [
+        "https://attaquant.exemple.com/rest/videos/",
+        "https://pod.exemple.fr.attaquant.com/rest/videos/",
+        "https://pod.exemple.fr:8443/rest/videos/",
+    ])
+    def test_hote_etranger_refuse(self, url):
+        with pytest.raises(PodAPIError):
+            _api()._abs(url)
+
+    def test_meme_hote_en_http_refuse(self):
+        with pytest.raises(PodAPIError):
+            _api()._abs("http://pod.exemple.fr/rest/videos/")
+
+    def test_pagination_next_etranger_arrete_tout(self):
+        premiere = FausseReponse({"results": [{"id": 1}],
+                                  "next": "https://attaquant.exemple.com/rest/videos/?page=2"})
+        api = _api([premiere])
+        with pytest.raises(PodAPIError):
+            api._paginate("/videos/")
+        hotes = [a["url"] for a in api.session.appels]
+        assert hotes == ["https://pod.exemple.fr/rest/videos/"], hotes
+
+    def test_pagination_next_http_arrete_tout(self):
+        premiere = FausseReponse({"results": [], "next": "http://pod.exemple.fr/rest/videos/?page=2"})
+        api = _api([premiere])
+        with pytest.raises(PodAPIError):
+            api._paginate("/videos/")
+        assert len(api.session.appels) == 1
+
+    def test_pagination_normale_suit_next(self):
+        p1 = FausseReponse({"results": [{"id": 1}],
+                            "next": "https://pod.exemple.fr/rest/videos/?page=2"})
+        p2 = FausseReponse({"results": [{"id": 2}], "next": None})
+        api = _api([p1, p2])
+        assert [v["id"] for v in api._paginate("/videos/")] == [1, 2]
+
+    def test_patch_sur_url_video_etrangere_refuse(self):
+        api = _api()
+        with pytest.raises(PodAPIError):
+            api.patch_video({"url": "https://attaquant.exemple.com/rest/videos/7/"},
+                            {"is_draft": False})
+        assert api.session.appels == []
+
+    def test_remplacement_sur_url_video_etrangere_refuse(self, fichier_video):
+        api = _api()
+        with pytest.raises(PodAPIError):
+            api.replace_video_file({"url": "https://attaquant.exemple.com/rest/videos/7/"},
+                                   fichier_video)
+        assert api.session.appels == []
