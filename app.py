@@ -845,7 +845,11 @@ class App(_AppBase):
                 own = v.get("owner")
                 own_str = own if isinstance(own, str) else (
                     own.get("url", "") if isinstance(own, dict) else "")
-                if creator_owner_url and own_str and creator_owner_url.rstrip("/") not in own_str.rstrip("/"):
+                # Égalité STRICTE (comme PodAdmin) : une inclusion de chaîne
+                # confondait `/users/1` et `/users/18`, et laissait passer une
+                # vidéo sans propriétaire connu.
+                vehicule = str(creator_owner_url or "").rstrip("/")
+                if vehicule and str(own_str).rstrip("/") != vehicule:
                     continue
                 retenues.append(v)
             if len(retenues) > 1:
@@ -1001,7 +1005,11 @@ class App(_AppBase):
                 # dépôt : la vidéo est déposée, seul son classement manque.
                 if discipline_url and it.slug:
                     try:
-                        self.api.set_disciplines(it.slug, [discipline_url])
+                        # L'URL de la vidéo, pas son slug : l'API indexe les
+                        # vidéos par identifiant numérique, et `/videos/<slug>/`
+                        # peut répondre 404 (voir PodAPI._video_endpoint). Le
+                        # classement échouait alors, seulement noté au Journal.
+                        self.api.set_disciplines(it.video_url or it.slug, [discipline_url])
                     except Exception as e:
                         self._ui(self._log, f"Discipline non rattachée ({it.title}) : {e}")
 
