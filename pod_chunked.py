@@ -223,6 +223,7 @@ class PodChunkedSession:
         retry_cb: Optional[Callable[[int, int, str], None]] = None,
         max_retries: int = 4,
         target_slug: str = "",
+        marqueur: str = "",
     ) -> str:
         """Téléverse `file_path` en morceaux via la session web, puis finalise.
         Renvoie le SLUG de la vidéo.
@@ -236,6 +237,13 @@ class PodChunkedSession:
         progress_cb(octets_envoyés, octets_total) : suivi de progression.
         retry_cb(tentative, total, message)       : appelé avant un ré-essai.
         max_retries : nombre d'essais par morceau (2 Mo) en cas de coupure.
+
+        marqueur : identifiant unique de CET envoi (ex. « upid1a2b3c4d »),
+            ajouté au nom de fichier transmis, en CRÉATION seulement. Il permet
+            de retrouver sans ambiguïté la vidéo créée si la finalisation est
+            coupée (504) : le compte DEPOT est partagé, et deux postes peuvent
+            déposer au même moment un fichier de même nom. Ignoré en
+            remplacement : la vidéo cible est désignée par son slug.
 
         N'amorce PAS l'encodage : au code appelant de lancer launch_encoding ensuite.
         """
@@ -252,6 +260,11 @@ class PodChunkedSession:
         # vrai titre est posé ensuite par PATCH ; pour un REMPLACEMENT, la vidéo
         # cible conserve son titre. Le nom transmis n'est qu'indicatif.
         filename = self._ascii_filename(os.path.basename(file_path))
+        if marqueur and not target_slug:
+            # Inséré AVANT l'extension : Pod dérive titre et slug du nom sans
+            # extension, c'est donc là que la recherche le retrouvera.
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}_{self._ascii_filename(marqueur)}{ext}"
         md5 = hashlib.md5()          # calculé en un seul passage, pendant l'envoi
 
         upload_id: Optional[str] = None

@@ -30,6 +30,7 @@ __license__     = "Usage interne — Université de Toulouse"
 import os
 import sys
 import threading
+import uuid
 from datetime import datetime
 
 import customtkinter as ctk
@@ -809,32 +810,55 @@ class App(_AppBase):
             return 0
 
     @staticmethod
-    def _search_term_for(filename: str) -> str:
-        """Terme de recherche pour retrouver une vidéo créée par chunké (Pod la
-        titre d'après le nom de fichier ASCII envoyé)."""
-        base = os.path.splitext(os.path.basename(filename))[0]
-        return PodChunkedSession._ascii_filename(base)
+    def _nouveau_marqueur() -> str:
+        """Marqueur unique d'un envoi par morceaux : « upid » + 8 hexadécimaux.
+        Il remplace la recherche par NOM DE FICHIER, qui confondait deux dépôts
+        simultanés de même nom sur le compte DEPOT partagé (et pouvait donc
+        attribuer la vidéo d'un enseignant à un autre)."""
+        return "upid" + uuid.uuid4().hex[:8]
 
-    def _verify_chunked_creation(self, search_term: str, pre_ids: set, creator_owner_url: str):
+    def _verify_chunked_creation(self, marqueur: str, creator_owner_url: str):
         """(Thread) Après un 504 à la finalisation, Pod termine la création côté
-        serveur. On sonde l'API jusqu'à voir une vidéo NOUVELLE (id absent de
-        pre_ids), créée par le VÉHICULE. Renvoie le dict vidéo, ou None après
-        expiration de la fenêtre de vérification."""
+        serveur. On sonde l'API sur le MARQUEUR de cet envoi jusqu'à voir la
+        vidéo, créée par le VÉHICULE. Renvoie le dict vidéo, ou None après
+        expiration de la fenêtre de vérification.
+
+        Garde-fou : si PLUSIEURS vidéos portent le marqueur, on ne sait plus
+        laquelle est la bonne. Plutôt que d'en réattribuer une au hasard (et
+        risquer de donner la vidéo d'un collègue), on lève PodChunkedError :
+        aucune réattribution, échec franc et alerte dans le Journal."""
         import time as _t
+        m = marqueur.lower()
         deadline = _t.time() + cfg.CHUNK_VERIFY_TIMEOUT_S
         while _t.time() < deadline:
             try:
-                cands = self.api.search_videos({"search": search_term, "limit": 25})
+                cands = self.api.search_videos({"search": marqueur, "limit": 25})
             except Exception:
                 cands = []
+            retenues = []
             for v in cands:
-                if v.get("id") in pre_ids:
+                # La recherche Pod porte sur plusieurs champs : on exige que le
+                # marqueur figure bien dans le titre ou le slug (issus du nom
+                # de fichier transmis), pas seulement « quelque part ».
+                if m not in f"{v.get('title', '')} {v.get('slug', '')}".lower():
                     continue
                 own = v.get("owner")
                 own_str = own if isinstance(own, str) else (
                     own.get("url", "") if isinstance(own, dict) else "")
                 if creator_owner_url and own_str and creator_owner_url.rstrip("/") not in own_str.rstrip("/"):
                     continue
+                retenues.append(v)
+            if len(retenues) > 1:
+                slugs = ", ".join(str(v.get("slug")) for v in retenues)
+                self._ui(self._log,
+                         f"⚠️⚠️ {len(retenues)} vidéos portent le marqueur {marqueur} "
+                         f"({slugs}) : AUCUNE n'est réattribuée. Elles restent au "
+                         f"nom du compte DEPOT — à vérifier côté web.")
+                raise PodChunkedError(
+                    f"Plusieurs vidéos portent le marqueur {marqueur} : "
+                    f"réattribution annulée par prudence ({slugs}).")
+            if retenues:
+                v = retenues[0]
                 self._ui(self._log, f"✓ Vidéo apparue après finalisation serveur : {v.get('slug')}")
                 return v
             remaining = max(0, int(deadline - _t.time()))
@@ -900,18 +924,17 @@ class App(_AppBase):
                     self._ui(self._log,
                              f"Gros fichier (> {cfg.CHUNK_THRESHOLD_BYTES//1024//1024} Mo) : "
                              f"bascule chunkée pour {it.title}.")
-                    search_term = self._search_term_for(it.filename)
-                    try:
-                        pre_ids = {v.get("id") for v in
-                                   self.api.search_videos({"search": search_term, "limit": 25})}
-                    except Exception:
-                        pre_ids = set()
+                    # Marqueur NEUF pour chaque envoi (une relance en génère un
+                    # autre) : aucune vidéo existante ne peut le porter, d'où
+                    # plus besoin de relever au préalable les ids déjà présents.
+                    marqueur = self._nouveau_marqueur()
                     # 1) Envoi par morceaux → vidéo créée au nom du VÉHICULE.
                     video = None
                     try:
                         slug = chunked.upload_video_chunked(
                             it.path, chunk_size=cfg.CHUNK_SIZE_BYTES,
-                            progress_cb=progress, retry_cb=on_retry)
+                            progress_cb=progress, retry_cb=on_retry,
+                            marqueur=marqueur)
                     except PodChunkedError as ce:
                         if ce.status in (502, 503, 504):
                             self._ui(self._log,
@@ -919,7 +942,7 @@ class App(_AppBase):
                                      "— Pod termine côté serveur, vérification en cours…")
                             self._ui(self._set_item_status, it, "⏳ finalisation serveur", T_ALERTE)
                             video = self._verify_chunked_creation(
-                                search_term, pre_ids, self.vehicle_owner_url)
+                                marqueur, self.vehicle_owner_url)
                             if not video:
                                 raise
                             slug = video.get("slug", "")

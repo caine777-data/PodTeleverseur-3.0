@@ -298,3 +298,184 @@ class TestPositionEnvoiParMorceaux:
         with pytest.raises(PodChunkedError):
             s.upload_video_chunked(cinq_octets, chunk_size=2)
         assert len(s.envois) == 1 and s.finalisations == []
+
+
+# ── Étape 6 : réattribution après un 504 guidée par un marqueur unique ─────
+
+class TestMarqueurDansLeNomTransmis:
+    """Le marqueur est ajouté au nom transmis en CRÉATION, jamais en
+    REMPLACEMENT (la vidéo cible y est désignée par son slug)."""
+
+    @staticmethod
+    def _noms_transmis(chemin, **kw):
+        from pod_chunked import PodChunkedSession
+        s = PodChunkedSession("https://pod.exemple.fr", "DEPOT", "x")
+        s._logged_in = True
+        noms = []
+
+        def faux_envoi(chunk, start, end, total, filename, upload_id, **k):
+            noms.append(filename)
+            return {"upload_id": "U1", "offset": end + 1}
+
+        s._send_one_chunk = faux_envoi
+        s._complete = lambda upload_id, md5, target_slug="": "slug"
+        s.upload_video_chunked(chemin, chunk_size=64, **kw)
+        return set(noms)
+
+    def test_creation_porte_le_marqueur(self, fichier_video):
+        base = os.path.splitext(os.path.basename(fichier_video))[0]
+        noms = self._noms_transmis(fichier_video, marqueur="upid0badcafe")
+        assert noms == {f"{base}_upid0badcafe.mp4"}, noms
+
+    def test_remplacement_sans_marqueur(self, fichier_video):
+        noms = self._noms_transmis(fichier_video, marqueur="upid0badcafe",
+                                   target_slug="123-cours")
+        assert noms == {os.path.basename(fichier_video)}, noms
+
+
+@pytest.fixture
+def module_app():
+    try:
+        import app as m
+    except Exception as e:                        # pas d'affichage disponible
+        pytest.skip(f"interface indisponible : {e}")
+    return m
+
+
+class _Rien:
+    """Objet absorbant : tout attribut ou appel renvoie un autre _Rien. Tient
+    lieu des widgets Tk, que la logique de dépôt ne fait que mettre à jour."""
+
+    def __getattr__(self, nom):
+        return _Rien()
+
+    def __call__(self, *a, **k):
+        return _Rien()
+
+
+class FauxDepot:
+    """Remplace PodChunkedSession : n'envoie rien ; la finalisation est
+    coupée avec le code `statut_final` (0 = succès direct)."""
+    envois = []
+    statut_final = 504
+
+    def __init__(self, *a, **k):
+        pass
+
+    def login(self):
+        pass
+
+    def close(self):
+        pass
+
+    def upload_video_chunked(self, chemin, **kw):
+        FauxDepot.envois.append(kw)
+        if FauxDepot.statut_final:
+            from pod_chunked import PodChunkedError
+            raise PodChunkedError("Gateway Timeout", status=FauxDepot.statut_final)
+        return "slug-direct"
+
+
+VEHICULE = "https://pod.exemple.fr/rest/users/99/"
+PROF = "https://pod.exemple.fr/rest/users/7/"
+
+
+class FausseAPI:
+    """API Pod simulée. `candidats(marqueur)` renvoie ce que la recherche
+    trouvera : le marqueur n'étant connu qu'une fois l'envoi lancé, les
+    candidats sont construits à la volée à partir du marqueur transmis."""
+
+    def __init__(self, candidats):
+        self.candidats = candidats
+        self.recherches = []
+        self.patches = []
+
+    def search_videos(self, params):
+        self.recherches.append(params.get("search"))
+        return self.candidats(FauxDepot.envois[-1].get("marqueur", ""))
+
+    def get_video_by_slug(self, slug):
+        return {"slug": slug, "url": f"https://pod.exemple.fr/rest/videos/{slug}/"}
+
+    def patch_video(self, video, payload):
+        self.patches.append((video.get("slug"), payload))
+
+    def __getattr__(self, nom):                  # discipline, encodage… : sans objet
+        return lambda *a, **k: None
+
+
+def _video(marqueur, slug, proprietaire=VEHICULE):
+    return {"id": int(slug.split("-")[0]), "slug": f"{slug}-{marqueur}",
+            "title": f"cours {marqueur}", "owner": proprietaire,
+            "url": f"https://pod.exemple.fr/rest/videos/{slug}/"}
+
+
+def _depot_gros_fichier(m, monkeypatch, fichier, candidats, statut_final=504):
+    """Rejoue _do_batch_upload (le VRAI code) sur une fausse instance : un
+    seul gros fichier, finalisation coupée par `statut_final`."""
+    monkeypatch.setattr(m, "PodChunkedSession", FauxDepot)
+    monkeypatch.setattr(m.cfg, "CHUNK_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_INTERVAL_S", 0)
+    FauxDepot.envois = []
+    FauxDepot.statut_final = statut_final
+
+    faux = _Rien()
+    faux.__dict__.update(
+        items=[m.UploadItem(fichier)], config_data={"url": "https://pod.exemple.fr"},
+        vehicle_username="DEPOT", vehicle_password="x", vehicle_owner_url=VEHICULE,
+        additional_owner_urls=[], site_urls=[], common_contributors=[],
+        api=FausseAPI(candidats), journal=[])
+    faux._ui = lambda fn, *a, **k: fn(*a, **k)
+    faux._log = faux.journal.append
+    faux._file_size = m.App._file_size
+    faux._nouveau_marqueur = m.App._nouveau_marqueur
+    faux._verify_chunked_creation = m.App._verify_chunked_creation.__get__(faux)
+    m.App._do_batch_upload(faux, PROF, "https://pod.exemple.fr/rest/types/1/")
+    return faux, FauxDepot.envois[-1].get("marqueur", "")
+
+
+class TestReattributionApres504:
+
+    def test_marqueur_genere_en_creation(self, module_app, monkeypatch, fichier_video):
+        import re
+        _, marqueur = _depot_gros_fichier(module_app, monkeypatch, fichier_video,
+                                          lambda m: [], statut_final=0)
+        assert re.fullmatch(r"upid[0-9a-f]{8}", marqueur), marqueur
+
+    def test_marqueur_different_a_chaque_envoi(self, module_app):
+        vus = {module_app.App._nouveau_marqueur() for _ in range(50)}
+        assert len(vus) == 50
+
+    def test_un_candidat_reattribue(self, module_app, monkeypatch, fichier_video):
+        faux, marqueur = _depot_gros_fichier(
+            module_app, monkeypatch, fichier_video, lambda m: [_video(m, "42")])
+        assert faux.api.recherches and set(faux.api.recherches) == {marqueur}
+        assert [p["owner"] for _, p in faux.api.patches] == [PROF]
+        assert faux.items[0].done
+
+    def test_deux_candidats_aucune_reattribution(self, module_app, monkeypatch, fichier_video):
+        faux, marqueur = _depot_gros_fichier(
+            module_app, monkeypatch, fichier_video,
+            lambda m: [_video(m, "42"), _video(m, "43")])
+        assert faux.api.patches == []
+        assert not faux.items[0].done
+        alertes = [l for l in faux.journal if marqueur in l and "AUCUNE" in l]
+        assert alertes, faux.journal
+
+    def test_zero_candidat_comportement_conserve(self, module_app, monkeypatch, fichier_video):
+        faux, _ = _depot_gros_fichier(module_app, monkeypatch, fichier_video, lambda m: [])
+        assert faux.api.patches == []
+        assert not faux.items[0].done
+        assert "Gateway Timeout" in faux.items[0].error
+
+    def test_homonyme_sans_marqueur_ignore(self, module_app, monkeypatch, fichier_video):
+        """Le cas qui a motivé le correctif : un autre poste dépose au même
+        moment un fichier de MÊME NOM. Sa vidéo ne porte pas notre marqueur ;
+        elle ne doit pas nous être attribuée, même si la recherche la renvoie."""
+        base = os.path.splitext(os.path.basename(fichier_video))[0]
+        homonyme = {"id": 5, "slug": "5-" + base, "title": base, "owner": VEHICULE,
+                    "url": "https://pod.exemple.fr/rest/videos/5/"}
+        faux, _ = _depot_gros_fichier(module_app, monkeypatch, fichier_video,
+                                      lambda m: [homonyme])
+        assert faux.api.patches == []
