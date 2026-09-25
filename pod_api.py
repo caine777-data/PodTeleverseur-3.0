@@ -443,20 +443,14 @@ class PodAPI:
     # ║  ADMINISTRATION (nouveau)                                         ║
     # ╚══════════════════════════════════════════════════════════════════╝
 
-    # ── A. Comptes — statut « équipe » (is_staff) ─────────────────────────
-    # Diagnostic : PATCH autorisé sur /rest/users/<id>/, is_staff modifiable.
+    # ── A. Comptes — lecture seule ────────────────────────────────────────
+    # set_user_staff / set_user_groups ont été retirées (3.4.2) : jamais
+    # appelées ici, elles donnaient à une appli d'enseignants le moyen de
+    # modifier les droits d'un compte. Elles relèvent de PodAdmin.
 
     def get_user(self, user_url: str) -> dict:
         """Détail d'un compte à partir de son URL (champ 'url' du compte)."""
         return self._get(user_url)
-
-    def set_user_staff(self, user_url: str, is_staff: bool) -> dict:
-        """Donne (True) ou retire (False) le statut « équipe » à un compte."""
-        return self._patch(user_url, json={"is_staff": bool(is_staff)})
-
-    def set_user_groups(self, user_url: str, group_names: list[str]) -> dict:
-        """Remplace les groupes d'accès d'un compte (champ 'groups')."""
-        return self._patch(user_url, json={"groups": list(group_names)})
 
     # ── B. Vidéos en masse — inventaire, réaffectation, nettoyage ─────────
     # Diagnostic : PATCH + DELETE autorisés, owner / is_draft modifiables.

@@ -119,3 +119,38 @@ class TestDelaisReseauFinis:
                                fichier_video)
         (appel,) = [a for a in api.session.appels if a["methode"] == "PATCH"]
         self._verifier(appel)
+
+
+# ── Étape 2 : méthodes d'administration retirées ───────────────────────────
+
+class TestMethodesAdministrationRetirees:
+    """set_user_staff / set_user_groups modifiaient les droits d'un compte :
+    rien à faire dans une appli d'enseignants. On vérifie la CLASSE réelle et
+    l'arbre syntaxique du code (pas une recherche de sous-chaîne, qui serait
+    trompée par le commentaire expliquant leur retrait)."""
+
+    NOMS = ("set_user_staff", "set_user_groups")
+
+    @pytest.mark.parametrize("nom", NOMS)
+    def test_absente_de_la_classe(self, nom):
+        assert not hasattr(PodAPI, nom), f"PodAPI.{nom} existe encore"
+
+    def test_aucun_appel_ni_definition_dans_le_code(self):
+        import ast
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        trouves = []
+        for dossier, _, fichiers in os.walk(racine):
+            if ".git" in dossier:
+                continue
+            for nom_fichier in fichiers:
+                if not nom_fichier.endswith(".py"):
+                    continue
+                chemin = os.path.join(dossier, nom_fichier)
+                with open(chemin, encoding="utf-8") as f:
+                    arbre = ast.parse(f.read())
+                for n in ast.walk(arbre):
+                    nom = (n.name if isinstance(n, ast.FunctionDef)
+                           else n.attr if isinstance(n, ast.Attribute) else None)
+                    if nom in self.NOMS:
+                        trouves.append(f"{nom_fichier}:{n.lineno} {nom}")
+        assert not trouves, trouves
