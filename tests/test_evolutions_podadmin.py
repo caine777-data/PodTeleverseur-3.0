@@ -35,6 +35,13 @@ def _lot(m, monkeypatch, fichier, api, *, statut_final=0, seuil=1,
         api=api, journal=[])
     faux._ui = lambda fn, *a, **k: fn(*a, **k)
     faux._log = faux.journal.append
+    # État du lot (1.9.2) : sans lui, `_Rien` rendrait « vrai » l'arrêt
+    # demandé et le lot s'arrêterait avant la première vidéo.
+    import threading
+    faux.depot_interrompu = threading.Event()
+    faux.depot_en_cours = False
+    faux.deposes_session = {}
+    faux._cle_fichier = m.App._cle_fichier
     for nom in ("_file_size", "_nouveau_marqueur", "_est_coupure_reseau"):
         if hasattr(m.App, nom):
             setattr(faux, nom, getattr(m.App, nom))
@@ -273,6 +280,8 @@ def _ecran(m, items):
                 "file_progress", "file_progress_lbl", "batch_progress"):
         setattr(f, nom, FauxWidget())
     f.progression_visible = False
+    f.depot_en_cours = False
+    f._depot_fin = lambda: None
     f._log = f.journal.append
     f._refresh_list = lambda: None
     f._run = lambda fn, *a: f.lancements.append(a)
@@ -342,6 +351,10 @@ class TestEchecsARelancer:
         faux._ui = lambda fn, *a, **k: fn(*a, **k)
         faux._log = faux.journal.append
         faux._file_size = m.App._file_size
+        import threading
+        faux.depot_interrompu = threading.Event()
+        faux.deposes_session = {}
+        faux._cle_fichier = m.App._cle_fichier
         m.App._do_batch_upload(faux, PROF, "https://pod.exemple.fr/rest/types/1/")
         assert api.envois_directs == 0 and FauxDepot.envois == []
         assert not it.done
@@ -406,3 +419,442 @@ class TestProgressionEtBilan:
         assert "1/2" in f.global_msg.texte
         assert "retirer" not in f.global_msg.texte
         assert f.retry_btn.visible and "(1)" in f.retry_btn.texte
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  PodAdmin 1.9.2 : interruption, attente courte après 502, liste protégée
+# ════════════════════════════════════════════════════════════════════════════
+
+class Compteur:
+    """annuler() qui devient vrai au n-ième appel (0 = tout de suite)."""
+
+    def __init__(self, a_partir_de):
+        self.appels = 0
+        self.seuil = a_partir_de
+
+    def __call__(self):
+        self.appels += 1
+        return self.appels > self.seuil
+
+
+# ── Moteurs d'envoi : l'arrêt est pris en compte ───────────────────────────
+
+class TestArretEnvoiDirect:
+
+    def test_arret_pendant_le_flux(self, monkeypatch):
+        """Avec requests-toolbelt, l'arrêt tombe au bloc suivant : le flux
+        n'est pas lu jusqu'au bout, et c'est EnvoiAnnule — pas une panne."""
+        import pod_api
+        if not pod_api.HAS_TOOLBELT:
+            pytest.skip("requests-toolbelt absent")
+        from test_correctifs_342 import FausseSession
+        fd, chemin = tempfile.mkstemp(suffix=".mp4")
+        with os.fdopen(fd, "wb") as f:
+            f.write(os.urandom(3 * 1024 * 1024))
+        try:
+            api = pod_api.PodAPI("https://pod.exemple.fr", "jeton")
+            api.session = FausseSession()
+            with pytest.raises(pod_api.EnvoiAnnule):
+                api.upload_video(chemin, "t", PROF, "https://pod.exemple.fr/rest/types/1/",
+                                 annuler=Compteur(2))
+        finally:
+            os.remove(chemin)
+
+    def test_arret_avant_envoi_aucune_requete(self, fichier_video):
+        import pod_api
+        from test_correctifs_342 import FausseSession
+        api = pod_api.PodAPI("https://pod.exemple.fr", "jeton")
+        api.session = FausseSession()
+        with pytest.raises(pod_api.EnvoiAnnule):
+            api.upload_video(fichier_video, "t", PROF, "https://pod.exemple.fr/rest/types/1/",
+                             annuler=lambda: True)
+        assert api.session.appels == []
+
+    def test_annulation_n_est_pas_une_panne(self, module_app):
+        """Elle ne doit ni déclencher le repli, ni compter comme échec."""
+        import pod_api
+        assert not issubclass(pod_api.EnvoiAnnule, pod_api.PodAPIError)
+        assert not module_app.App._est_coupure_reseau(pod_api.EnvoiAnnule())
+
+
+class TestArretEnvoiParMorceaux:
+
+    @staticmethod
+    def _session(annuler_apres):
+        from pod_chunked import PodChunkedSession
+        s = PodChunkedSession("https://pod.exemple.fr", "DEPOT", "x")
+        s._logged_in = True
+        s.envois, s.finalisations = [], []
+
+        def faux_envoi(chunk, start, end, total, filename, upload_id, **k):
+            s.envois.append(start)
+            return {"upload_id": "U1", "offset": end + 1}
+
+        s._send_one_chunk = faux_envoi
+        s._complete = lambda *a, **k: s.finalisations.append(1) or "slug"
+        return s
+
+    @pytest.fixture
+    def cinq_octets(self):
+        fd, chemin = tempfile.mkstemp(suffix=".mp4")
+        with os.fdopen(fd, "wb") as f:
+            f.write(b"ABCDE")
+        yield chemin
+        os.remove(chemin)
+
+    def test_arret_entre_deux_morceaux(self, cinq_octets):
+        from pod_chunked import EnvoiAnnule
+        s = self._session(1)
+        with pytest.raises(EnvoiAnnule):
+            s.upload_video_chunked(cinq_octets, chunk_size=2, annuler=Compteur(1))
+        assert s.envois == [0] and s.finalisations == []
+
+    def test_arret_juste_avant_la_finalisation(self, cinq_octets):
+        """Tous les morceaux sont partis, mais la finalisation (qui CRÉE la
+        vidéo) n'est pas lancée : aucune vidéo n'existe."""
+        from pod_chunked import EnvoiAnnule
+        s = self._session(0)
+        # 3 morceaux + 1 contrôle de fin de fichier = 4 appels, puis arrêt.
+        with pytest.raises(EnvoiAnnule):
+            s.upload_video_chunked(cinq_octets, chunk_size=2, annuler=Compteur(4))
+        assert len(s.envois) == 3 and s.finalisations == []
+
+    def test_arret_entre_deux_essais_d_un_morceau(self, monkeypatch):
+        """Sur une liaison qui coupe sans cesse, l'arrêt n'attend pas la fin
+        des ré-essais du morceau."""
+        import requests
+        import pod_chunked
+        from pod_chunked import EnvoiAnnule, PodChunkedSession
+        monkeypatch.setattr(pod_chunked.time, "sleep", lambda s: None)
+        s = PodChunkedSession("https://pod.exemple.fr", "DEPOT", "x")
+        essais = []
+
+        def post(*a, **k):
+            essais.append(1)
+            raise requests.exceptions.ConnectionError("Connection reset by peer")
+        s.session.post = post
+        with pytest.raises(EnvoiAnnule):
+            s._send_one_chunk(b"AB", 0, 1, 2, "v.mp4", None, retry_cb=None,
+                              max_retries=4, annuler=lambda: True)
+        assert essais == [1]
+
+
+# ── Attente après une finalisation coupée ──────────────────────────────────
+
+class TestAttenteApresFinalisation:
+
+    def _faux(self, m, candidats=lambda: []):
+        faux = _Rien()
+        faux.__dict__.update(journal=[])
+        faux._ui = lambda fn, *a, **k: fn(*a, **k)
+        faux._log = faux.journal.append
+
+        class API:
+            def search_videos(self, params):
+                return candidats()
+        faux.api = API()
+        return faux
+
+    def test_attente_interrompue_rapidement(self, module_app, monkeypatch):
+        import time
+        m = module_app
+        monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_INTERVAL_S", 30)
+        faux = self._faux(m)
+        compteur = Compteur(3)
+        debut = time.time()
+        with pytest.raises(m.EnvoiAnnule) as exc:
+            m.App._verify_chunked_creation(faux, "upid0badcafe", VEHICULE,
+                                           annuler=compteur, delai_s=600)
+        assert time.time() - debut < 3            # pas les 30 s de la pause
+        assert exc.value.a_verifier                # la vidéo existe PEUT-ÊTRE
+        assert "upid0badcafe" in str(exc.value)    # repère à rechercher
+
+    def test_delai_respecte(self, module_app, monkeypatch):
+        import time
+        m = module_app
+        monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_INTERVAL_S", 0.05)
+        # Défaut réduit à 5 s : si `delai_s` était ignoré, le test échouerait
+        # en 5 s au lieu d'attendre les 30 min réelles.
+        monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_TIMEOUT_S", 5)
+        debut = time.time()
+        assert m.App._verify_chunked_creation(self._faux(m), "upid0badcafe", VEHICULE,
+                                              delai_s=0.3) is None
+        assert time.time() - debut < 2
+
+    @pytest.mark.parametrize("statut, attendu", [(504, "CHUNK_VERIFY_TIMEOUT_S"),
+                                                  (502, "CHUNK_VERIFY_TIMEOUT_502_S"),
+                                                  (503, "CHUNK_VERIFY_TIMEOUT_502_S")])
+    def test_attente_longue_seulement_sur_504(self, module_app, monkeypatch,
+                                              fichier_video, statut, attendu):
+        m = module_app
+        delais = []
+        faux = _Rien()
+        faux.__dict__.update(journal=[], vehicle_owner_url=VEHICULE)
+        faux._ui = lambda fn, *a, **k: fn(*a, **k)
+        faux._log = faux.journal.append
+        faux._nouveau_marqueur = m.App._nouveau_marqueur
+        faux._verify_chunked_creation = (
+            lambda marqueur, veh, annuler=None, delai_s=None: delais.append(delai_s))
+        FauxDepot.envois, FauxDepot.statut_final = [], statut
+        with pytest.raises(m.PodChunkedError):
+            m.App._deposer_par_morceaux(faux, FauxDepot(), m.UploadItem(fichier_video),
+                                        None, None)
+        assert delais == [getattr(m.cfg, attendu)]
+        # Le repère est écrit au Journal : seul moyen de retrouver la vidéo si
+        # l'application est fermée entre-temps.
+        assert any(FauxDepot.envois[0]["marqueur"] in l and "vérification pendant" in l
+                   for l in faux.journal), faux.journal
+
+    def test_attente_502_courte(self):
+        import config
+        assert config.CHUNK_VERIFY_TIMEOUT_502_S <= 300 < config.CHUNK_VERIFY_TIMEOUT_S
+
+
+# ── Le lot face à l'arrêt ──────────────────────────────────────────────────
+
+def _lot_items(m, monkeypatch, items, api, *, seuil=GROS, annuler=None):
+    """Comme `_lot`, mais pour plusieurs vidéos et avec un arrêt programmable."""
+    import threading
+    monkeypatch.setattr(m, "PodChunkedSession", FauxDepot)
+    monkeypatch.setattr(m.cfg, "CHUNK_THRESHOLD_BYTES", seuil)
+    monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_INTERVAL_S", 0)
+    # Attentes après 504/502 raccourcies : un défaut qui renverrait une vidéo
+    # doit faire échouer le test, pas le bloquer 30 minutes.
+    monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(m.cfg, "CHUNK_VERIFY_TIMEOUT_502_S", 0.2)
+    FauxDepot.envois = []          # état de classe : remis à zéro à chaque lot
+    faux = _Rien()
+    faux.__dict__.update(
+        items=items, config_data={"url": "https://pod.exemple.fr"},
+        vehicle_username="DEPOT", vehicle_password="x", vehicle_owner_url=VEHICULE,
+        additional_owner_urls=[], site_urls=[], common_contributors=[],
+        api=api, journal=[], bilans=[])
+    faux.depot_interrompu = threading.Event()
+    faux.deposes_session = {}
+    faux._ui = lambda fn, *a, **k: fn(*a, **k)
+    faux._log = faux.journal.append
+    faux._on_batch_done = lambda *a: faux.bilans.append(a)
+    for nom in ("_file_size", "_nouveau_marqueur", "_est_coupure_reseau", "_cle_fichier"):
+        setattr(faux, nom, getattr(m.App, nom))
+    for nom in ("_verify_chunked_creation", "_deposer_par_morceaux", "_echecs_a_relancer",
+                "_set_item_status"):
+        setattr(faux, nom, getattr(m.App, nom).__get__(faux))
+    if annuler:
+        annuler(faux)
+    m.App._do_batch_upload(faux, PROF, "https://pod.exemple.fr/rest/types/1/")
+    return faux
+
+
+def _fichiers(n):
+    chemins = []
+    for i in range(n):
+        fd, c = tempfile.mkstemp(suffix=f"_{i}.mp4")
+        with os.fdopen(fd, "wb") as f:
+            f.write(b"x" * 10)
+        chemins.append(c)
+    return chemins
+
+
+@pytest.fixture
+def trois_fichiers():
+    chemins = _fichiers(3)
+    yield chemins
+    for c in chemins:
+        os.remove(c)
+
+
+class APIQuiArrete(APIEnvoiDirect):
+    """Envoi direct réussi, mais le 1er envoi déclenche l'arrêt du lot."""
+
+    def __init__(self, faux_ref):
+        super().__init__(None)
+        self.faux_ref = faux_ref
+
+    def upload_video(self, *a, **k):
+        self.faux_ref[0].depot_interrompu.set()
+        return super().upload_video(*a, **k)
+
+
+class TestLotInterrompu:
+
+    def test_arret_entre_deux_videos(self, module_app, monkeypatch, trois_fichiers):
+        m = module_app
+        ref = [None]
+        api = APIQuiArrete(ref)
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        faux = _lot_items(m, monkeypatch, items, api,
+                          annuler=lambda f: ref.__setitem__(0, f))
+        assert api.envois_directs == 1              # la 2e n'est pas partie
+        assert [it.done for it in items] == [True, False, False]
+        ok, total, interrompu = faux.bilans[-1]
+        assert (ok, total, interrompu) == (1, 3, True)
+
+    def test_arret_pendant_une_video_n_est_pas_un_echec(self, module_app, monkeypatch,
+                                                        trois_fichiers):
+        from pod_api import EnvoiAnnule
+        m = module_app
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        faux = _lot_items(m, monkeypatch, items, APIEnvoiDirect(EnvoiAnnule()))
+        assert items[0].status.startswith("⏹")
+        assert items[0].error == ""                 # pas une erreur
+        assert faux._echecs_a_relancer() == []      # rien à « relancer »
+        assert FauxDepot.envois == []               # pas de repli par morceaux
+        assert faux.bilans[-1][2] is True
+
+    def test_attente_504_interrompue_video_a_verifier(self, module_app, monkeypatch,
+                                                      trois_fichiers):
+        """Arrêt pendant l'attente qui suit un 504 : la vidéo existe peut-être.
+        Elle est marquée « à vérifier », jamais relancée, jamais renvoyée."""
+        m = module_app
+        FauxDepot.envois, FauxDepot.statut_final = [], 504
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        faux = _lot_items(m, monkeypatch, items, FausseAPI(lambda mq: []), seuil=1,
+                          annuler=lambda f: setattr(
+                              f, "_verify_chunked_creation",
+                              lambda *a, **k: (_ for _ in ()).throw(
+                                  m.EnvoiAnnule("x", a_verifier=True))))
+        it = items[0]
+        assert it.a_verifier and not it.done and it.status.startswith("⚠️")
+        assert faux._echecs_a_relancer() == []
+        assert m.App._cle_fichier(it.path) in faux.deposes_session
+        # Un nouveau lot ne la renvoie pas.
+        FauxDepot.envois = []
+        _lot_items(m, monkeypatch, [it], FausseAPI(lambda mq: []), seuil=1)
+        assert FauxDepot.envois == []
+
+    def test_video_ajoutee_pendant_le_lot_part_a_la_suite(self, module_app, monkeypatch,
+                                                          trois_fichiers):
+        m = module_app
+        items = [m.UploadItem(trois_fichiers[0])]
+
+        class API(APIEnvoiDirect):
+            def upload_video(self, *a, **k):
+                if len(items) == 1:
+                    items.append(m.UploadItem(trois_fichiers[1]))   # ajout en cours de lot
+                return super().upload_video(*a, **k)
+        api = API(None)
+        faux = _lot_items(m, monkeypatch, items, api)
+        assert api.envois_directs == 2 and all(it.done for it in items)
+        assert faux.bilans[-1][:2] == (2, 2)        # le total suit la liste
+
+    def test_envoi_reussi_memorise_pour_la_session(self, module_app, monkeypatch,
+                                                   trois_fichiers):
+        m = module_app
+        items = [m.UploadItem(trois_fichiers[0])]
+        faux = _lot_items(m, monkeypatch, items, APIEnvoiDirect(None))
+        heure, slug = faux.deposes_session[m.App._cle_fichier(trois_fichiers[0])]
+        assert slug == "1-direct"
+
+
+# ── Ajout de fichiers et liste protégée pendant un lot ─────────────────────
+
+def _ecran_ajout(m, items=None, en_cours=False):
+    f = _ecran(m, items or [])
+    f.depot_en_cours = en_cours
+    f.deposes_session = {}
+    f.dnd_ok = False
+    f._cle_fichier = m.App._cle_fichier
+    for nom in ("_add_paths", "_clear_items", "_remove_item", "_maj_verrou_liste",
+                "_depot_debut", "_depot_fin", "_depot_interrompre"):
+        setattr(f, nom, getattr(m.App, nom).__get__(f))
+    import threading
+    f.depot_interrompu = threading.Event()
+    f.clear_btn = FauxWidget()
+    f.upload_stop_btn = FauxWidget()
+    return f
+
+
+class TestAjoutDeFichiers:
+
+    def test_meme_fichier_ecrit_autrement_non_duplique(self, module_app, trois_fichiers):
+        m = module_app
+        f = _ecran_ajout(m)
+        c = trois_fichiers[0]
+        autre_ecriture = c.replace("\\", "/")
+        if os.name == "nt":
+            autre_ecriture = autre_ecriture.upper()
+        assert f._add_paths([c]) == 1
+        assert f._add_paths([autre_ecriture]) == 0
+        assert len(f.items) == 1
+        assert "1 déjà dans la liste" in f.global_msg.texte
+
+    def test_bilan_exact(self, module_app, trois_fichiers):
+        m = module_app
+        f = _ecran_ajout(m)
+        f._add_paths(trois_fichiers[:1])
+        assert f._add_paths(trois_fichiers) == 2
+        assert f.global_msg.texte == "2 vidéo(s) ajoutée(s), 1 déjà dans la liste."
+
+    @pytest.mark.parametrize("reponse, attendu", [(True, 1), (False, 0)])
+    def test_fichier_deja_envoye_demande_confirmation(self, module_app, monkeypatch,
+                                                      trois_fichiers, reponse, attendu):
+        m = module_app
+        questions = []
+        monkeypatch.setattr(m.messagebox, "askyesno",
+                            lambda *a, **k: questions.append(a) or reponse)
+        f = _ecran_ajout(m)
+        f.deposes_session[m.App._cle_fichier(trois_fichiers[0])] = ("10:42", "12-cours")
+        assert f._add_paths([trois_fichiers[0]]) == attendu
+        assert len(questions) == 1 and "SECOND exemplaire" in questions[0][1]
+        if not reponse:
+            assert "déjà envoyée(s) non ajoutée(s)" in f.global_msg.texte
+
+    def test_ajout_pendant_un_lot_annonce(self, module_app, trois_fichiers):
+        m = module_app
+        f = _ecran_ajout(m, en_cours=True)
+        assert f._add_paths([trois_fichiers[0]]) == 1
+        assert "à la suite du lot en cours" in f.global_msg.texte
+
+    def test_selecteur_annule_ne_dit_rien(self, module_app):
+        f = _ecran_ajout(module_app)
+        assert f._add_paths(()) == 0
+        assert f.global_msg.texte == ""
+
+
+class TestListeProtegeePendantUnLot:
+
+    def test_retraits_bloques(self, module_app, trois_fichiers):
+        m = module_app
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        items[0].done = True
+        f = _ecran_ajout(m, list(items), en_cours=True)
+        f._remove_item(items[1])
+        f._clear_items()
+        f._retirer_terminees()
+        assert f.items == items
+
+    def test_boutons_grises_puis_reactives(self, module_app, trois_fichiers):
+        m = module_app
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        for it in items:
+            it.btn_retirer = FauxWidget()
+        f = _ecran_ajout(m, items)
+        f._depot_debut()
+        tous = [f.clear_btn, f.purge_btn] + [it.btn_retirer for it in items]
+        assert all(b.options.get("state") == "disabled" for b in tous)
+        assert f.upload_stop_btn.visible
+        f._depot_fin()
+        assert all(b.options.get("state") == "normal" for b in tous)
+        assert not f.upload_stop_btn.visible and not f.depot_en_cours
+
+    def test_interrompre_arme_l_arret(self, module_app):
+        f = _ecran_ajout(module_app)
+        f._depot_debut()
+        assert not f.depot_interrompu.is_set()
+        f._depot_interrompre()
+        assert f.depot_interrompu.is_set()
+        assert f.upload_stop_btn.options.get("state") == "disabled"
+        f._depot_debut()                           # un nouveau lot repart propre
+        assert not f.depot_interrompu.is_set()
+
+    def test_bilan_interrompu(self, module_app, trois_fichiers):
+        m = module_app
+        items = [m.UploadItem(c) for c in trois_fichiers]
+        items[0].done = True
+        items[1].a_verifier, items[1].error = True, "attente interrompue"
+        f = _ecran_ajout(m, items)
+        f._on_batch_done(1, 3, True)
+        assert "Interrompu : 1/3" in f.global_msg.texte
+        assert "reprend les 1 restante(s)" in f.global_msg.texte
+        assert "1 à vérifier" in f.global_msg.texte
+        assert not f.retry_btn.visible             # « à vérifier » n'est pas un échec

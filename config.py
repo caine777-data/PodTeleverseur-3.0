@@ -51,6 +51,15 @@ CHUNK_SIZE_BYTES      = 2 * 1024 * 1024         # 2 Mo par morceau
 CHUNK_VERIFY_TIMEOUT_S  = 1800   # 30 minutes
 CHUNK_VERIFY_INTERVAL_S = 15     # secondes entre deux sondages
 
+# Après un 502 ou un 503, en revanche, l'attente est COURTE (repris de PodAdmin
+# 1.9.2). Ces codes ne disent pas « Pod est encore en train de travailler »
+# (c'est le 504) mais « Pod a répondu par une erreur, ou n'a pas traité la
+# demande ». Constaté le 25/09/2026 : un 502 est tombé 44 s après le début de
+# l'envoi, et la vidéo n'est jamais apparue. Attendre 30 min pour rien
+# bloquait tout le lot ; trois minutes suffisent à rattraper le cas où Pod
+# aurait malgré tout terminé.
+CHUNK_VERIFY_TIMEOUT_502_S = 180   # 3 minutes
+
 try:
     import keyring
     HAS_KEYRING = True

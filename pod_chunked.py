@@ -103,6 +103,17 @@ class PodChunkedError(Exception):
         self.body = body
 
 
+class EnvoiAnnule(Exception):
+    """Envoi par morceaux arrêté à la demande de l'utilisateur (pas une erreur).
+    (Repris de PodAdmin 1.9.2.)
+
+    Classe propre à ce module, qui reste indépendant de pod_api.py : l'appelant
+    attrape les deux (voir `ANNULATIONS` dans app.py)."""
+    def __init__(self, message: str = "Envoi interrompu à votre demande."):
+        super().__init__(message)
+        self.a_verifier = False     # arrêt avant finalisation : aucune vidéo créée
+
+
 class PodChunkedSession:
     """Client de téléversement par morceaux via session web Esup-Pod.
 
@@ -231,6 +242,7 @@ class PodChunkedSession:
         max_retries: int = 4,
         target_slug: str = "",
         marqueur: str = "",
+        annuler: Optional[Callable[[], bool]] = None,
     ) -> str:
         """Téléverse `file_path` en morceaux via la session web, puis finalise.
         Renvoie le SLUG de la vidéo.
@@ -251,6 +263,12 @@ class PodChunkedSession:
             coupée (504) : le compte DEPOT est partagé, et deux postes peuvent
             déposer au même moment un fichier de même nom. Ignoré en
             remplacement : la vidéo cible est désignée par son slug.
+
+        annuler() : consulté avant chaque morceau et avant chaque nouvel essai ;
+            s'il renvoie vrai → EnvoiAnnule. L'arrêt a toujours lieu AVANT la
+            finalisation : aucune vidéo n'est créée, le téléversement partiel
+            expire seul côté serveur. La finalisation lancée, elle n'est plus
+            interruptible.
 
         N'amorce PAS l'encodage : au code appelant de lancer launch_encoding ensuite.
         """
@@ -279,6 +297,8 @@ class PodChunkedSession:
 
         with open(file_path, "rb") as fh:
             while True:
+                if annuler and annuler():
+                    raise EnvoiAnnule()
                 chunk = fh.read(chunk_size)
                 if not chunk:
                     break
@@ -289,7 +309,7 @@ class PodChunkedSession:
                 # Envoi du morceau, avec ré-essais isolés sur ce seul morceau.
                 resp = self._send_one_chunk(
                     chunk, start, end, total, filename, upload_id,
-                    retry_cb=retry_cb, max_retries=max_retries)
+                    retry_cb=retry_cb, max_retries=max_retries, annuler=annuler)
 
                 # La réponse fournit l'upload_id (au 1er morceau) et l'offset.
                 if isinstance(resp, dict):
@@ -323,14 +343,17 @@ class PodChunkedSession:
                 "Aucun upload_id renvoyé par le serveur : le protocole chunké "
                 "n'a pas démarré comme attendu (à re-valider avec la sonde).")
 
-        # Finalisation → création effective de la vidéo, renvoie le slug.
+        # Dernière occasion d'arrêter : au-delà, la vidéo est créée.
+        if annuler and annuler():
+            raise EnvoiAnnule()
         # Finalisation → création (slug vide) OU remplacement (slug cible fourni).
         return self._complete(upload_id, md5.hexdigest(), target_slug=target_slug)
 
     def _send_one_chunk(self, chunk: bytes, start: int, end: int, total: int,
                         filename: str, upload_id: Optional[str], *,
                         retry_cb: Optional[Callable[[int, int, str], None]],
-                        max_retries: int) -> dict:
+                        max_retries: int,
+                        annuler: Optional[Callable[[], bool]] = None) -> dict:
         """Envoie UN morceau (POST multipart). Ré-essaie ce seul morceau en cas
         de coupure réseau/SSL. Renvoie le corps JSON de la réponse (dict)."""
         crange = f"bytes {start}-{end}/{total}"
@@ -346,6 +369,10 @@ class PodChunkedSession:
             "Accept": "application/json",
         }
         for attempt in range(1, max_retries + 1):
+            # Avant chaque nouvel essai aussi : sur une liaison qui coupe sans
+            # cesse, les pauses cumulées se comptent en dizaines de secondes.
+            if attempt > 1 and annuler and annuler():
+                raise EnvoiAnnule()
             try:
                 # multipart : le binaire dans `files`, les champs texte dans `data`.
                 data = {"csrfmiddlewaretoken": csrf}

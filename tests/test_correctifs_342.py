@@ -430,6 +430,13 @@ def _depot_gros_fichier(m, monkeypatch, fichier, candidats, statut_final=504):
     faux._log = faux.journal.append
     faux._file_size = m.App._file_size
     faux._nouveau_marqueur = m.App._nouveau_marqueur
+    # État du lot (1.9.2) : sans lui, `_Rien` rendrait « vrai » l'arrêt
+    # demandé et le lot s'arrêterait avant la première vidéo.
+    import threading
+    faux.depot_interrompu = threading.Event()
+    faux.depot_en_cours = False
+    faux.deposes_session = {}
+    faux._cle_fichier = m.App._cle_fichier
     faux._verify_chunked_creation = m.App._verify_chunked_creation.__get__(faux)
     # Méthodes du lot ajoutées ensuite (évolutions PodAdmin) : branchées si présentes.
     for nom in ("_deposer_par_morceaux",):

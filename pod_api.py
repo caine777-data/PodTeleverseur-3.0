@@ -60,6 +60,22 @@ class PodAPIError(Exception):
         self.body = body
 
 
+class EnvoiAnnule(Exception):
+    """Envoi arrêté à la demande de l'utilisateur — ce n'est PAS une erreur.
+    (Repris de PodAdmin 1.9.2.)
+
+    Distincte de `PodAPIError` pour ne jamais être confondue avec une panne :
+    une annulation ne doit ni déclencher le repli sur l'envoi par morceaux, ni
+    compter parmi les « échecs » à relancer.
+
+    `a_verifier` : vrai si la vidéo a PEUT-ÊTRE été créée malgré l'arrêt
+    (attente interrompue après un 504) — la relancer créerait un doublon."""
+    def __init__(self, message: str = "Envoi interrompu à votre demande.",
+                 a_verifier: bool = False):
+        super().__init__(message)
+        self.a_verifier = a_verifier
+
+
 class PodAPI:
     """Client de l'API REST Esup-Pod, authentifié par TOKEN.
 
@@ -324,12 +340,20 @@ class PodAPI:
         progress_cb: Optional[Callable[[int, int], None]] = None,
         retry_cb: Optional[Callable[[int, int, str], None]] = None,
         max_attempts: int = 3,
+        annuler: Optional[Callable[[], bool]] = None,
     ) -> dict:
         """
         Téléverse une vidéo. Renvoie le dict de la vidéo créée (avec 'slug', 'url').
 
         progress_cb(bytes_envoyés, bytes_total) est appelé pendant l'envoi.
         N'amorce PAS l'encodage (voir launch_encoding).
+
+        annuler() : consulté à chaque bloc lu pendant l'envoi (avec
+        requests-toolbelt) et avant chaque tentative ; s'il renvoie vrai,
+        l'envoi s'arrête aussitôt (EnvoiAnnule). Le fichier n'étant pas arrivé
+        en entier, le serveur ne crée aucune vidéo. Une fois tout le fichier
+        transmis, l'attente de la réponse n'est plus interruptible (bornée par
+        UPLOAD_TIMEOUT).
 
         RELANCE AUTOMATIQUE (nouveauté) : les gros fichiers échouent parfois à
         cause d'une coupure réseau/SSL transitoire en cours d'envoi (ex.
@@ -380,6 +404,8 @@ class PodAPI:
 
         last_exc = None
         for attempt in range(1, max_attempts + 1):
+            if annuler and annuler():
+                raise EnvoiAnnule()
             # Une tentative = ouvrir le fichier, (re)construire l'encodeur, POSTer.
             f = open(file_path, "rb")
             try:
@@ -393,6 +419,10 @@ class PodAPI:
                     def _cb(monitor):
                         # Callback de progression du flux multipart : remonte le
                         # nombre d'octets déjà lus/envoyés au reste de l'appli.
+                        # Appelé par la lecture même du flux : lever ici arrête
+                        # l'envoi au bloc suivant, sans attendre la fin du fichier.
+                        if annuler and annuler():
+                            raise EnvoiAnnule()
                         if progress_cb:
                             progress_cb(monitor.bytes_read, total)
 

@@ -46,9 +46,14 @@ import maj                     # vérification de mise à jour (dépôt public)
 # couleurs et trois fonctions, tous en MAJUSCULES ou nommés sans ambiguïté.
 from theme import *                                    # noqa: F401,F403
 from theme import message_utilisateur, etat_vide, verifier_palette  # noqa: F401
-from pod_api import PodAPI, PodAPIError, SUBTITLE_LANGS, SUBTITLE_KINDS
+from pod_api import PodAPI, PodAPIError, EnvoiAnnule, SUBTITLE_LANGS, SUBTITLE_KINDS
 # Moteur de téléversement par morceaux via session web (gros fichiers > seuil).
 from pod_chunked import PodChunkedSession, PodChunkedError
+from pod_chunked import EnvoiAnnule as EnvoiAnnuleMorceaux
+
+# Arrêts demandés par l'utilisateur (bouton 🛑 du Téléversement). Chacun des
+# deux modules d'envoi a sa classe, pour rester indépendant de l'autre.
+ANNULATIONS = (EnvoiAnnule, EnvoiAnnuleMorceaux)
 
 # Pillow (fourni avec customtkinter) — pour afficher le logo
 try:
@@ -110,6 +115,10 @@ class UploadItem:
         self.status = "en attente"     # en attente | en cours | terminé | échec
         self.done = False              # True dès qu'un envoi a réussi (pour ne pas
                                        # ré-uploader un succès lors d'une relance)
+        # Envoi arrêté pendant l'attente qui suit un 504 : la vidéo a PEUT-ÊTRE
+        # été créée au nom du compte DEPOT. Elle n'est plus jamais relancée
+        # automatiquement — ce serait un doublon — tant que personne n'a vérifié.
+        self.a_verifier = False
         self.slug = ""
         self.video_url = ""
         self.error = ""
@@ -117,6 +126,7 @@ class UploadItem:
         self.row = None
         self.title_var = None
         self.status_lbl = None
+        self.btn_retirer = None        # « ✕ » de la ligne, grisé pendant un lot
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -175,6 +185,18 @@ class App(_AppBase):
         self.type_map: dict[str, str] = {}     # titre → url
         self.site_urls: list[str] = []         # sites (requis à l'upload)
         self.items: list[UploadItem] = []
+        # Arrêt du lot de téléversement (bouton 🛑, repris de PodAdmin 1.9.2).
+        self.depot_interrompu = threading.Event()
+        # Vrai pendant un lot. La boucle d'envoi parcourt `self.items` par
+        # INDEX : retirer une ligne en cours de route décalait la liste et
+        # faisait sauter, sans rien dire, la vidéo suivante. Pendant un lot, on
+        # peut donc AJOUTER (elles partent à la suite) mais pas retirer.
+        self.depot_en_cours = False
+        # Fichiers envoyés depuis l'ouverture de l'application :
+        # clé normalisée du chemin → (heure, slug). Sert à prévenir avant de
+        # renvoyer un fichier déjà envoyé puis retiré de la liste (doublon sur
+        # Pod). Mémoire de SESSION seulement : elle disparaît à la fermeture.
+        self.deposes_session: dict[str, tuple[str, str]] = {}
         self.all_users: list[dict] = []        # liste complète Pod (pour sélection owner)
         self.additional_owner_urls: list[str] = []
         self.additional_owner_map: dict[str, str] = {}   # url → libellé (pour ré-ouverture)
@@ -389,9 +411,11 @@ class App(_AppBase):
                       command=self._add_files, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(side="left", padx=(0, 8))
         ctk.CTkButton(sel, text="📁  Ajouter un dossier", width=190,
                       command=self._add_folder, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(sel, text="🗑  Vider la liste", width=140,
-                      fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
-                      command=self._clear_items, text_color=T_SUR_NEUTRE).pack(side="left")
+        self.clear_btn = ctk.CTkButton(
+            sel, text="🗑  Vider la liste", width=140,
+            fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+            command=self._clear_items, text_color=T_SUR_NEUTRE)
+        self.clear_btn.pack(side="left")
 
         # « Retirer les terminées » (repris de PodAdmin) — n'apparaît que s'il
         # y a de quoi retirer. Après un lot, les lignes envoyées n'ont plus
@@ -520,6 +544,15 @@ class App(_AppBase):
         self.retry_btn.pack(side="left", padx=(8, 0))
         self.retry_btn.pack_forget()   # masqué par défaut
 
+        # Arrêt du lot en cours. Affiché UNIQUEMENT pendant un lot : présent au
+        # repos, il laisserait croire qu'il y a quelque chose à arrêter. Gris et
+        # non rouge : il n'efface rien, il arrête.
+        self.upload_stop_btn = ctk.CTkButton(
+            launch, text="🛑  Interrompre", height=40,
+            fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._depot_interrompre)
+
         self.global_msg = ctk.CTkLabel(launch, text="", text_color=T_SECONDAIRE,
                                        font=ctk.CTkFont(size=12))
         self.global_msg.pack(side="left", padx=14)
@@ -545,6 +578,49 @@ class App(_AppBase):
 
         # État initial du propriétaire (reflète un éventuel compte déjà enregistré).
         self._refresh_owner_status()
+
+    def _depot_debut(self):
+        """Arme l'arrêt, affiche le bouton 🛑 et verrouille les retraits."""
+        self.depot_interrompu.clear()
+        self.depot_en_cours = True
+        self._maj_verrou_liste()
+        self.upload_stop_btn.configure(state="normal", text="🛑  Interrompre")
+        if not self.upload_stop_btn.winfo_ismapped():
+            self.upload_stop_btn.pack(side="left", padx=(8, 0), before=self.global_msg)
+
+    def _maj_verrou_liste(self):
+        """Grise (lot en cours) ou réactive tout ce qui RETIRE des lignes.
+        L'ajout reste permis : un fichier ajouté pendant un lot part à la
+        suite, dans le même lot."""
+        etat = "disabled" if self.depot_en_cours else "normal"
+        boutons = [getattr(self, "clear_btn", None), getattr(self, "purge_btn", None)]
+        boutons += [it.btn_retirer for it in self.items]
+        for b in boutons:
+            if b is None:
+                continue
+            try:
+                b.configure(state=etat)
+            except Exception:
+                pass      # ligne détruite entre-temps (liste reconstruite)
+
+    def _depot_interrompre(self):
+        """Demande l'arrêt du lot de téléversement.
+
+        L'arrêt porte AUSSI sur la vidéo en cours : un gros fichier peut
+        prendre une demi-heure, et l'attente après un 504 jusqu'à 30 min.
+        L'envoi s'arrête au bloc suivant ; rien n'est laissé à moitié côté
+        serveur, puisque la vidéo n'est créée qu'une fois le fichier complet."""
+        self.depot_interrompu.set()
+        self.upload_stop_btn.configure(state="disabled", text="⏳  Arrêt en cours…")
+        self.global_msg.configure(text="Arrêt demandé…", text_color=T_ALERTE)
+        self._log("🛑 Arrêt du téléversement demandé.")
+
+    def _depot_fin(self):
+        """Retire le bouton 🛑 et déverrouille les retraits à la fin du lot."""
+        self.depot_en_cours = False
+        self._maj_verrou_liste()
+        if self.upload_stop_btn.winfo_ismapped():
+            self.upload_stop_btn.pack_forget()
 
     def _afficher_progression(self):
         """Fait apparaître les deux barres de progression (début d'un lot).
@@ -612,28 +688,87 @@ class App(_AppBase):
                 found.append(p)
         if found:
             self._show_tab("upload")
+            # Le bilan (ajoutées, déjà présentes…) est affiché par _add_paths :
+            # l'ancien message annonçait `len(found)` ajoutées, même quand
+            # aucune ne l'était.
             self._add_paths(sorted(found))
-            self.global_msg.configure(
-                text=f"{len(found)} vidéo(s) ajoutée(s) par glisser-déposer.", text_color=T_SUCCES)
         else:
             self.global_msg.configure(
                 text="Aucune vidéo reconnue dans les éléments déposés.", text_color=T_ALERTE)
 
-    def _add_paths(self, paths):
-        """Ajoute des chemins à la file en évitant les doublons, puis rafraîchit l'affichage."""
-        existing = {it.path for it in self.items}
-        added = 0
+    @staticmethod
+    def _cle_fichier(path: str) -> str:
+        """Forme comparable d'un chemin : sous Windows, le sélecteur de fichiers
+        et le glisser-déposer ne l'écrivent pas pareil (« C:/x » / « C:\\x »,
+        casse). Comparés tels quels, le même fichier entrait deux fois."""
+        return os.path.normcase(os.path.abspath(path))
+
+    def _add_paths(self, paths) -> int:
+        """Ajoute des chemins à la file, puis dit EXACTEMENT ce qui s'est passé.
+        (Repris de PodAdmin 1.9.2.)
+
+        Trois cas écartés ou signalés :
+          • déjà dans la liste → ignoré (on le dit, au lieu de ne rien faire) ;
+          • déjà envoyé depuis l'ouverture de l'application, puis retiré de la
+            liste → confirmation : le renvoyer créerait un second exemplaire
+            sur Pod. Cette mémoire est celle de la SESSION ;
+          • ajout pendant un lot → permis : le fichier part à la suite.
+        Renvoie le nombre de vidéos réellement ajoutées."""
+        if not paths:
+            return 0      # sélecteur annulé : rien à dire
+        dans_liste = {self._cle_fichier(it.path) for it in self.items}
+        nouveaux, deja_liste, deja_envoyes = [], 0, []
         for p in paths:
-            if p not in existing:
-                self.items.append(UploadItem(p))
-                existing.add(p)          # éviter les doublons dans un même lot
-                added += 1
-        if added:
+            cle = self._cle_fichier(p)
+            if cle in dans_liste:
+                deja_liste += 1
+                continue
+            dans_liste.add(cle)          # éviter les doublons dans un même ajout
+            if cle in self.deposes_session:
+                deja_envoyes.append(p)
+            else:
+                nouveaux.append(p)
+
+        refuses = 0
+        if deja_envoyes:
+            lignes = []
+            for p in deja_envoyes[:5]:
+                heure, slug = self.deposes_session[self._cle_fichier(p)]
+                lignes.append(f"  • {os.path.basename(p)} — {heure}"
+                              + (f" ({slug})" if slug else ""))
+            if len(deja_envoyes) > 5:
+                lignes.append(f"  • … et {len(deja_envoyes) - 5} autre(s)")
+            if messagebox.askyesno(
+                    "Fichier déjà envoyé",
+                    f"{len(deja_envoyes)} fichier(s) ont déjà été envoyés depuis "
+                    "l'ouverture de Pod Téléverseur :\n\n" + "\n".join(lignes) +
+                    "\n\nLes renvoyer créera un SECOND exemplaire sur Pod.\n"
+                    "Les ajouter quand même ?"):
+                nouveaux += deja_envoyes
+            else:
+                refuses = len(deja_envoyes)
+
+        for p in nouveaux:
+            self.items.append(UploadItem(p))
+        if nouveaux:
             self._refresh_list()
-            self._log(f"{added} vidéo(s) ajoutée(s) à la file.")
+            self._log(f"{len(nouveaux)} vidéo(s) ajoutée(s) à la file.")
+
+        bilan = f"{len(nouveaux)} vidéo(s) ajoutée(s)"
+        if self.depot_en_cours and nouveaux:
+            bilan += " — elles partiront à la suite du lot en cours"
+        if deja_liste:
+            bilan += f", {deja_liste} déjà dans la liste"
+        if refuses:
+            bilan += f", {refuses} déjà envoyée(s) non ajoutée(s)"
+        self.global_msg.configure(text=bilan + ".",
+                                  text_color=T_SUCCES if nouveaux else T_ALERTE)
+        return len(nouveaux)
 
     def _clear_items(self):
         """Vide la file d'attente et rafraîchit l'affichage."""
+        if self.depot_en_cours:
+            return      # vider en plein lot arrêtait l'envoi et effaçait sa ligne
         self.items.clear()
         self._refresh_list()
 
@@ -641,6 +776,8 @@ class App(_AppBase):
         """Retire les vidéos ENVOYÉES, et elles seules. Les échecs restent :
         ce sont eux qu'on voudra relancer, et les perdre obligerait à
         re-sélectionner les fichiers un par un."""
+        if self.depot_en_cours:
+            return
         avant = len(self.items)
         self.items = [it for it in self.items if not it.done]
         retirees = avant - len(self.items)
@@ -671,9 +808,12 @@ class App(_AppBase):
           • celles qui EXISTENT déjà sur le serveur sans avoir été
             réattribuées (`slug` connu) : les renvoyer créerait une SECONDE
             vidéo, la première restant au nom du compte DEPOT ;
-          • celles jamais tentées (pas d'erreur) : ce ne sont pas des échecs."""
+          • celles jamais tentées (pas d'erreur) : ce ne sont pas des échecs ;
+          • celles « à vérifier » (attente d'un 504 interrompue) : elles ont
+            une erreur mais pas de slug, et existent PEUT-ÊTRE sur Pod ; les
+            renvoyer risquerait un doublon."""
         return [it for it in self.items
-                if not it.done and not it.slug and it.error]
+                if not it.done and not it.slug and not it.a_verifier and it.error]
 
     def _update_retry_button(self):
         """Affiche « Relancer les échecs (N) » s'il y a des échecs, sinon le masque."""
@@ -733,10 +873,12 @@ class App(_AppBase):
             ctk.CTkEntry(row, textvariable=it.title_var).pack(
                 side="left", padx=8, pady=6, expand=True, fill="x")
 
-            # bouton supprimer
-            ctk.CTkButton(row, text="✕", width=28, height=26,
-                          fg_color=C_NEUTRE, hover_color=C_DESTR_SURV,
-                          command=lambda item=it: self._remove_item(item), text_color=T_SUR_NEUTRE).pack(side="right", padx=4)
+            # bouton supprimer (grisé pendant un lot : voir `depot_en_cours`)
+            it.btn_retirer = ctk.CTkButton(
+                row, text="✕", width=28, height=26,
+                fg_color=C_NEUTRE, hover_color=C_DESTR_SURV,
+                command=lambda item=it: self._remove_item(item), text_color=T_SUR_NEUTRE)
+            it.btn_retirer.pack(side="right", padx=4)
 
             # état
             it.status_lbl = ctk.CTkLabel(row, text=it.status, width=100,
@@ -745,9 +887,12 @@ class App(_AppBase):
 
         self.count_lbl.configure(text=f"{len(self.items)} vidéo(s)")
         self._maj_bouton_purge()
+        self._maj_verrou_liste()
 
     def _remove_item(self, item: UploadItem):
         """Retire une vidéo de la file et rafraîchit l'affichage."""
+        if self.depot_en_cours:
+            return      # bouton grisé ; garde-fou si l'appel vient d'ailleurs
         if item in self.items:
             self.items.remove(item)
             self._refresh_list()
@@ -885,6 +1030,7 @@ class App(_AppBase):
         self.batch_progress.set(0)
         self._last_is_draft = self.visibility_combo.get().startswith("Brouillon")
         self._last_do_encode = bool(self.encode_var.get())
+        self._depot_debut()
         self._run(self._do_batch_upload, owner_url, type_url, self._last_discipline_url,
                   self._last_is_draft, self._last_do_encode)
 
@@ -904,7 +1050,8 @@ class App(_AppBase):
         attribuer la vidéo d'un enseignant à un autre)."""
         return "upid" + uuid.uuid4().hex[:8]
 
-    def _verify_chunked_creation(self, marqueur: str, creator_owner_url: str):
+    def _verify_chunked_creation(self, marqueur: str, creator_owner_url: str,
+                                 annuler=None, delai_s=None):
         """(Thread) Après un 504 à la finalisation, Pod termine la création côté
         serveur. On sonde l'API sur le MARQUEUR de cet envoi jusqu'à voir la
         vidéo, créée par le VÉHICULE. Renvoie le dict vidéo, ou None après
@@ -913,11 +1060,30 @@ class App(_AppBase):
         Garde-fou : si PLUSIEURS vidéos portent le marqueur, on ne sait plus
         laquelle est la bonne. Plutôt que d'en réattribuer une au hasard (et
         risquer de donner la vidéo d'un collègue), on lève PodChunkedError :
-        aucune réattribution, échec franc et alerte dans le Journal."""
+        aucune réattribution, échec franc et alerte dans le Journal.
+
+        `annuler()` est consulté en continu (la pause de sondage est découpée) :
+        l'attente s'arrête en moins d'une seconde. La vidéo a pu être créée
+        malgré tout : l'annulation porte donc `a_verifier` et le marqueur à
+        rechercher, pour qu'on la retrouve au lieu de la renvoyer en double.
+
+        `delai_s` : durée maximale d'attente (défaut : CHUNK_VERIFY_TIMEOUT_S,
+        30 min — le cas du 504 ; voir CHUNK_VERIFY_TIMEOUT_502_S pour le 502)."""
         import time as _t
         m = marqueur.lower()
-        deadline = _t.time() + cfg.CHUNK_VERIFY_TIMEOUT_S
+        deadline = _t.time() + (delai_s if delai_s is not None
+                                else cfg.CHUNK_VERIFY_TIMEOUT_S)
+
+        def verifier_arret():
+            if annuler and annuler():
+                raise EnvoiAnnule(
+                    "Attente interrompue : la vidéo a peut-être été créée au nom du "
+                    f"compte DEPOT. Le support peut la retrouver sur Pod en cherchant "
+                    f"« {marqueur} » ; ne la renvoyez pas avant cette vérification.",
+                    a_verifier=True)
+
         while _t.time() < deadline:
+            verifier_arret()
             try:
                 cands = self.api.search_videos({"search": marqueur, "limit": 25})
             except Exception:
@@ -957,7 +1123,10 @@ class App(_AppBase):
                      text=f"⏳ Finalisation côté serveur (gros fichier)… vérification, "
                           f"{remaining//60} min {remaining%60}s restantes",
                      text_color=T_ALERTE)
-            _t.sleep(cfg.CHUNK_VERIFY_INTERVAL_S)
+            fin_pause = _t.time() + cfg.CHUNK_VERIFY_INTERVAL_S
+            while _t.time() < fin_pause:
+                verifier_arret()
+                _t.sleep(min(0.25, max(0.0, fin_pause - _t.time())))
         return None
 
     @staticmethod
@@ -981,7 +1150,7 @@ class App(_AppBase):
         sans_reponse = getattr(err, "status", 0) in (0, 502, 503, 504)
         return sans_reponse and any(i in texte for i in indices)
 
-    def _deposer_par_morceaux(self, chunked, it, progress, on_retry):
+    def _deposer_par_morceaux(self, chunked, it, progress, on_retry, annuler=None):
         """(Thread) Envoie une vidéo NEUVE par morceaux, avec reprise après 504.
 
         Point de passage UNIQUE de toute création par morceaux (gros fichier,
@@ -991,7 +1160,8 @@ class App(_AppBase):
         repli levait une TypeError, la vidéo — peut-être bien créée — était
         affichée en échec, et « Relancer les échecs » en créait une seconde.
 
-        Renvoie (slug, vidéo) ; la vidéo vaut None si l'API ne la retrouve pas."""
+        Renvoie (slug, vidéo) ; la vidéo vaut None si l'API ne la retrouve pas.
+        `annuler()` : arrêt demandé par l'utilisateur (voir `_depot_interrompre`)."""
         # Marqueur NEUF pour chaque envoi (une relance en génère un autre) :
         # aucune vidéo existante ne peut le porter, d'où plus besoin de relever
         # au préalable les ids déjà présents.
@@ -1000,18 +1170,33 @@ class App(_AppBase):
         try:
             slug = chunked.upload_video_chunked(
                 it.path, chunk_size=cfg.CHUNK_SIZE_BYTES,
-                progress_cb=progress, retry_cb=on_retry, marqueur=marqueur)
+                progress_cb=progress, retry_cb=on_retry, marqueur=marqueur,
+                annuler=annuler)
         except PodChunkedError as ce:
             # La passerelle a coupé la finalisation : Pod termine côté serveur.
             # On attend que la vidéo apparaisse plutôt que de conclure à l'échec.
             if ce.status not in (502, 503, 504):
                 raise
+            # 504 : la passerelle a cessé d'attendre, Pod continue → attente
+            # longue. 502/503 : Pod a échoué ou n'a rien traité → attente courte
+            # (voir CHUNK_VERIFY_TIMEOUT_502_S dans config.py).
+            delai = (cfg.CHUNK_VERIFY_TIMEOUT_S if ce.status == 504
+                     else cfg.CHUNK_VERIFY_TIMEOUT_502_S)
+            # Le marqueur est ÉCRIT au Journal : si l'attente échoue ou si
+            # l'application est fermée entre-temps, c'est le seul moyen de
+            # retrouver la vidéo côté web.
             self._ui(self._log,
-                     f"⏳ Finalisation coupée par la passerelle (HTTP {ce.status}) "
-                     "— Pod termine côté serveur, vérification en cours…")
+                     f"⏳ {it.title} : finalisation coupée (HTTP {ce.status}) — "
+                     f"vérification pendant {delai // 60} min au plus "
+                     f"(repère à rechercher si besoin : {marqueur})…")
             self._ui(self._set_item_status, it, "⏳ finalisation serveur", T_ALERTE)
-            video = self._verify_chunked_creation(marqueur, self.vehicle_owner_url)
+            video = self._verify_chunked_creation(marqueur, self.vehicle_owner_url,
+                                                  annuler, delai_s=delai)
             if not video:
+                self._ui(self._log,
+                         f"❌ {it.title} : aucune vidéo apparue en {delai // 60} min "
+                         f"après le HTTP {ce.status}. Faites vérifier sur Pod (repère "
+                         f"{marqueur}) avant de relancer.")
                 raise
             slug = video.get("slug", "")
         if video is None:
@@ -1031,8 +1216,23 @@ class App(_AppBase):
         total = len(self.items)
         ok = 0
         chunked = None      # session véhicule DEPOT, ouverte à la 1re nécessité
+        # Consulté par les envois eux-mêmes (bloc par bloc, morceau par
+        # morceau, pendant l'attente après un 504) : voir `_depot_interrompre`.
+        annuler = self.depot_interrompu.is_set
+        interrompu = False
 
-        for idx, it in enumerate(self.items, 1):
+        # Boucle par INDEX sur la liste VIVANTE : un fichier ajouté pendant le
+        # lot (permis, voir `_add_paths`) part à la suite, et le total affiché
+        # le suit. Les RETRAITS sont bloqués pendant le lot (`depot_en_cours`) :
+        # un retrait décalait les index et faisait sauter la vidéo suivante.
+        idx = 0
+        while idx < len(self.items):
+            it = self.items[idx]
+            idx += 1
+            total = len(self.items)
+            if annuler():
+                interrompu = True
+                break
             # On saute les vidéos déjà téléversées avec succès (utile en relance).
             if it.done:
                 ok += 1
@@ -1042,6 +1242,11 @@ class App(_AppBase):
             # la renvoyer en créerait une seconde, la première restant au nom
             # du compte DEPOT. Elle se règle à la main, pas par un renvoi.
             if it.slug:
+                self._ui(self.batch_progress.set, idx / total)
+                continue
+            # …et celles dont l'existence est incertaine (attente d'un 504
+            # interrompue) : les renvoyer risquerait un doublon.
+            if it.a_verifier:
                 self._ui(self.batch_progress.set, idx / total)
                 continue
 
@@ -1083,6 +1288,7 @@ class App(_AppBase):
                             site_urls=self.site_urls,
                             progress_cb=progress,
                             retry_cb=on_retry,
+                            annuler=annuler,
                         )
                     except PodAPIError as e:
                         # REPLI AUTOMATIQUE SUR L'ENVOI PAR MORCEAUX (repris de
@@ -1118,7 +1324,8 @@ class App(_AppBase):
                                  f"Gros fichier (> {cfg.CHUNK_THRESHOLD_BYTES//1024//1024} Mo) : "
                                  f"bascule chunkée pour {it.title}.")
                     # 1) Envoi par morceaux → vidéo créée au nom du VÉHICULE.
-                    slug, video = self._deposer_par_morceaux(chunked, it, progress, on_retry)
+                    slug, video = self._deposer_par_morceaux(chunked, it, progress, on_retry,
+                                                             annuler)
                     it.slug = slug
                     it.video_url = video.get("url", "") if isinstance(video, dict) else ""
                     # 2) RÉATTRIBUTION au propriétaire choisi + métadonnées (token enseignant).
@@ -1182,10 +1389,33 @@ class App(_AppBase):
                 it.done = True            # marque le succès (ne sera pas relancé)
                 it.error = ""
                 ok += 1
+                # Mémoire de session : prévient avant un renvoi, même si la
+                # ligne est retirée de la liste entre-temps (voir _add_paths).
+                self.deposes_session[self._cle_fichier(it.path)] = (
+                    datetime.now().strftime("%H:%M"), it.slug)
                 self._ui(self._set_item_status, it, "✅ terminé", T_SUCCES)
                 self._ui(self._log,
                          f"Téléversé{' (chunké)' if par_morceaux else ''} : {it.title}  (slug={it.slug})")
 
+            except ANNULATIONS as e:
+                # Arrêt demandé : ni un échec (rien à « relancer »), ni une
+                # erreur à afficher en rouge. On s'arrête là pour tout le lot.
+                interrompu = True
+                if getattr(e, "a_verifier", False):
+                    it.a_verifier = True
+                    it.error = str(e)
+                    # Peut-être créée : même précaution qu'un envoi réussi si
+                    # le fichier est retiré puis réajouté.
+                    self.deposes_session[self._cle_fichier(it.path)] = (
+                        datetime.now().strftime("%H:%M"), "peut-être créée, à vérifier")
+                    self._ui(self._set_item_status, it, "⚠️ à vérifier", T_ALERTE)
+                    self._ui(self._log, f"⚠️ {it.title} : {e}")
+                else:
+                    self._ui(self._set_item_status, it, "⏹ interrompu", T_ALERTE)
+                    self._ui(self._log,
+                             f"⏹ {it.title} : envoi interrompu — aucune vidéo créée.")
+                self._ui(self.batch_progress.set, idx / total)
+                break
             except PodChunkedError as e:
                 it.error = f"{e} — {e.body}"
                 self._ui(self._set_item_status, it, "❌ échec", T_ERREUR)
@@ -1205,23 +1435,36 @@ class App(_AppBase):
         if chunked is not None:
             chunked.close()
 
-        self._ui(self._on_batch_done, ok, total)
+        self._ui(self._on_batch_done, ok, len(self.items), interrompu)
 
-    def _on_batch_done(self, ok: int, total: int):
+    def _on_batch_done(self, ok: int, total: int, interrompu: bool = False):
         """Réactive l'interface, affiche le bilan et gère le bouton « Relancer les échecs »."""
         self.launch_btn.configure(state="normal")
         self.retry_btn.configure(state="normal")
+        self._depot_fin()
         self.file_progress.set(0)
         self.file_progress_lbl.configure(text="")
         self._masquer_progression()
         reussite = (ok == total)
-        self.global_msg.configure(
-            text=(f"✅  Terminé : {ok} vidéo(s) téléversée(s). "
-                  f"Vous pouvez les retirer de la liste."
-                  if reussite else
-                  f"Terminé : {ok}/{total} vidéo(s) téléversée(s)."),
-            text_color=T_SUCCES if reussite else T_ALERTE)
-        self._log(f"Lot terminé : {ok}/{total} réussis.")
+        if interrompu:
+            reste = sum(1 for it in self.items
+                        if not it.done and not it.a_verifier and not it.slug)
+            a_verifier = sum(1 for it in self.items if it.a_verifier)
+            texte = f"⏹  Interrompu : {ok}/{total} vidéo(s) téléversée(s)."
+            if reste:
+                texte += f" « Lancer le téléversement » reprend les {reste} restante(s)."
+            if a_verifier:
+                texte += f" ⚠️ {a_verifier} à vérifier (voir le Journal)."
+            self.global_msg.configure(text=texte, text_color=T_ALERTE)
+            self._log(f"Lot interrompu : {ok}/{total} réussis.")
+        else:
+            self.global_msg.configure(
+                text=(f"✅  Terminé : {ok} vidéo(s) téléversée(s). "
+                      f"Vous pouvez les retirer de la liste."
+                      if reussite else
+                      f"Terminé : {ok}/{total} vidéo(s) téléversée(s)."),
+                text_color=T_SUCCES if reussite else T_ALERTE)
+            self._log(f"Lot terminé : {ok}/{total} réussis.")
 
         # « Relancer les échecs (N) » : seulement les vrais échecs, jamais une
         # vidéo déjà créée (voir _echecs_a_relancer).
@@ -1264,6 +1507,7 @@ class App(_AppBase):
         # barres resteraient masquées pendant tout le renvoi.
         self._afficher_progression()
         self._log(f"Relance de {len(echecs)} vidéo(s) en échec…")
+        self._depot_debut()
         self._run(self._do_batch_upload, owner_url, type_url,
                   getattr(self, "_last_discipline_url", ""),
                   self.visibility_combo.get().startswith("Brouillon"),
