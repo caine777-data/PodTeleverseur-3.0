@@ -431,6 +431,12 @@ def _depot_gros_fichier(m, monkeypatch, fichier, candidats, statut_final=504):
     faux._file_size = m.App._file_size
     faux._nouveau_marqueur = m.App._nouveau_marqueur
     faux._verify_chunked_creation = m.App._verify_chunked_creation.__get__(faux)
+    # Méthodes du lot ajoutées ensuite (évolutions PodAdmin) : branchées si présentes.
+    for nom in ("_deposer_par_morceaux",):
+        if hasattr(m.App, nom):
+            setattr(faux, nom, getattr(m.App, nom).__get__(faux))
+    if hasattr(m.App, "_est_coupure_reseau"):
+        faux._est_coupure_reseau = m.App._est_coupure_reseau
     m.App._do_batch_upload(faux, PROF, "https://pod.exemple.fr/rest/types/1/")
     return faux, FauxDepot.envois[-1].get("marqueur", "")
 

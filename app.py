@@ -873,6 +873,64 @@ class App(_AppBase):
             _t.sleep(cfg.CHUNK_VERIFY_INTERVAL_S)
         return None
 
+    @staticmethod
+    def _est_coupure_reseau(err: Exception) -> bool:
+        """Cette erreur vient-elle d'une coupure de connexion (et non d'un refus
+        du serveur) ? Repris de PodAdmin.
+
+        On ne replie sur l'envoi par morceaux QUE dans ce cas. Un refus métier
+        (400 champ manquant, 403 droits insuffisants…) échouerait de la même
+        façon par morceaux : le rejouer ferait perdre du temps et risquerait
+        de créer un doublon.
+
+        Signature typique de la coupure par la passerelle :
+        « SSLEOFError: EOF occurred in violation of protocol »."""
+        texte = f"{getattr(err, 'body', '')} {err}".lower()
+        indices = ("sslerror", "ssleoferror", "eof occurred",
+                   "connection aborted", "connection reset",
+                   "max retries exceeded", "connectionerror",
+                   "remotedisconnected", "broken pipe")
+        # `status` vaut 0 quand aucune réponse HTTP n'a été reçue (vraie coupure).
+        sans_reponse = getattr(err, "status", 0) in (0, 502, 503, 504)
+        return sans_reponse and any(i in texte for i in indices)
+
+    def _deposer_par_morceaux(self, chunked, it, progress, on_retry):
+        """(Thread) Envoie une vidéo NEUVE par morceaux, avec reprise après 504.
+
+        Point de passage UNIQUE de toute création par morceaux (gros fichier,
+        et repli après coupure de l'envoi direct). Dans PodAdmin, ces deux
+        chemins avaient chacun leur copie de la reprise, et l'une appelait
+        `_verify_chunked_creation` avec de mauvais arguments : un 504 dans le
+        repli levait une TypeError, la vidéo — peut-être bien créée — était
+        affichée en échec, et « Relancer les échecs » en créait une seconde.
+
+        Renvoie (slug, vidéo) ; la vidéo vaut None si l'API ne la retrouve pas."""
+        # Marqueur NEUF pour chaque envoi (une relance en génère un autre) :
+        # aucune vidéo existante ne peut le porter, d'où plus besoin de relever
+        # au préalable les ids déjà présents.
+        marqueur = self._nouveau_marqueur()
+        video = None
+        try:
+            slug = chunked.upload_video_chunked(
+                it.path, chunk_size=cfg.CHUNK_SIZE_BYTES,
+                progress_cb=progress, retry_cb=on_retry, marqueur=marqueur)
+        except PodChunkedError as ce:
+            # La passerelle a coupé la finalisation : Pod termine côté serveur.
+            # On attend que la vidéo apparaisse plutôt que de conclure à l'échec.
+            if ce.status not in (502, 503, 504):
+                raise
+            self._ui(self._log,
+                     f"⏳ Finalisation coupée par la passerelle (HTTP {ce.status}) "
+                     "— Pod termine côté serveur, vérification en cours…")
+            self._ui(self._set_item_status, it, "⏳ finalisation serveur", T_ALERTE)
+            video = self._verify_chunked_creation(marqueur, self.vehicle_owner_url)
+            if not video:
+                raise
+            slug = video.get("slug", "")
+        if video is None:
+            video = self.api.get_video_by_slug(slug)
+        return slug, video
+
     def _do_batch_upload(self, owner_url: str, type_url: str, discipline_url: str = "",
                          is_draft: bool = True, do_encode: bool = True):
         """(Thread) Téléverse chaque vidéo, ajoute les crédits, lance l'encodage, suit la progression.
@@ -916,45 +974,59 @@ class App(_AppBase):
                          f"Relance {item.title} : {message} (essai {attempt}/{total_attempts})")
 
             big = self._file_size(it.path) > cfg.CHUNK_THRESHOLD_BYTES
+            # Voie empruntée : par morceaux pour un gros fichier, OU en repli
+            # quand l'envoi direct a été coupé (voir plus bas).
+            par_morceaux = big
             try:
-                if big:
-                    # ── Gros fichier : MORCEAUX via le VÉHICULE DEPOT (embarqué) ──
+                if not big:
+                    # ── Fichier sous le seuil : upload classique par TOKEN ──
+                    try:
+                        video = self.api.upload_video(
+                            it.path, it.title or it.filename, owner_url, type_url,
+                            main_lang=self.config_data.get("main_lang", "fr"),
+                            cursus=self.config_data.get("cursus", "0"),
+                            is_draft=is_draft,
+                            additional_owner_urls=self.additional_owner_urls,
+                            site_urls=self.site_urls,
+                            progress_cb=progress,
+                            retry_cb=on_retry,
+                        )
+                    except PodAPIError as e:
+                        # REPLI AUTOMATIQUE SUR L'ENVOI PAR MORCEAUX (repris de
+                        # PodAdmin). Même sous le seuil, la passerelle coupe un
+                        # envoi monobloc qui dure plus d'environ une minute
+                        # (« SSLEOFError: EOF occurred in violation of
+                        # protocol ») : ce qui compte est la DURÉE, donc le
+                        # débit montant du poste, pas la taille. Réessayer à
+                        # l'identique échoue invariablement ; la voie par
+                        # morceaux est faite pour résister à ces coupures.
+                        # Un refus du serveur (400, 403…) n'est PAS rejoué.
+                        if not self._est_coupure_reseau(e):
+                            raise
+                        self._ui(self._log,
+                                 f"⚠️ {it.title} : envoi direct coupé par le serveur. "
+                                 "Bascule automatique sur l'envoi par morceaux…")
+                        self._ui(self._set_item_status, it, "⟳ envoi par morceaux", T_ALERTE)
+                        par_morceaux = True
+                    else:
+                        it.slug = video.get("slug", "") if isinstance(video, dict) else ""
+                        it.video_url = video.get("url", "") if isinstance(video, dict) else ""
+
+                if par_morceaux:
+                    # ── MORCEAUX via le VÉHICULE DEPOT (embarqué) ──
                     if chunked is None:
                         chunked = PodChunkedSession(
                             self.config_data.get("url", ""),
                             self.vehicle_username, self.vehicle_password)
                         chunked.login()
                         self._ui(self._log, "Session véhicule ouverte (upload chunké).")
-                    self._ui(self._log,
-                             f"Gros fichier (> {cfg.CHUNK_THRESHOLD_BYTES//1024//1024} Mo) : "
-                             f"bascule chunkée pour {it.title}.")
-                    # Marqueur NEUF pour chaque envoi (une relance en génère un
-                    # autre) : aucune vidéo existante ne peut le porter, d'où
-                    # plus besoin de relever au préalable les ids déjà présents.
-                    marqueur = self._nouveau_marqueur()
+                    if big:
+                        self._ui(self._log,
+                                 f"Gros fichier (> {cfg.CHUNK_THRESHOLD_BYTES//1024//1024} Mo) : "
+                                 f"bascule chunkée pour {it.title}.")
                     # 1) Envoi par morceaux → vidéo créée au nom du VÉHICULE.
-                    video = None
-                    try:
-                        slug = chunked.upload_video_chunked(
-                            it.path, chunk_size=cfg.CHUNK_SIZE_BYTES,
-                            progress_cb=progress, retry_cb=on_retry,
-                            marqueur=marqueur)
-                    except PodChunkedError as ce:
-                        if ce.status in (502, 503, 504):
-                            self._ui(self._log,
-                                     f"⏳ Finalisation coupée par la passerelle (HTTP {ce.status}) "
-                                     "— Pod termine côté serveur, vérification en cours…")
-                            self._ui(self._set_item_status, it, "⏳ finalisation serveur", T_ALERTE)
-                            video = self._verify_chunked_creation(
-                                marqueur, self.vehicle_owner_url)
-                            if not video:
-                                raise
-                            slug = video.get("slug", "")
-                        else:
-                            raise
+                    slug, video = self._deposer_par_morceaux(chunked, it, progress, on_retry)
                     it.slug = slug
-                    if video is None:
-                        video = self.api.get_video_by_slug(slug)
                     it.video_url = video.get("url", "") if isinstance(video, dict) else ""
                     # 2) RÉATTRIBUTION au propriétaire choisi + métadonnées (token enseignant).
                     #    Si le PATCH owner échoue, la vidéo reste au nom du véhicule :
@@ -985,20 +1057,6 @@ class App(_AppBase):
                         self._ui(self._log,
                                  f"⚠️ Vidéo créée (slug={slug}) mais introuvable via l'API pour "
                                  "réattribution — à vérifier côté web.")
-                else:
-                    # ── Petit fichier : upload classique par TOKEN (inchangé) ──
-                    video = self.api.upload_video(
-                        it.path, it.title or it.filename, owner_url, type_url,
-                        main_lang=self.config_data.get("main_lang", "fr"),
-                        cursus=self.config_data.get("cursus", "0"),
-                        is_draft=is_draft,
-                        additional_owner_urls=self.additional_owner_urls,
-                        site_urls=self.site_urls,
-                        progress_cb=progress,
-                        retry_cb=on_retry,
-                    )
-                    it.slug = video.get("slug", "") if isinstance(video, dict) else ""
-                    it.video_url = video.get("url", "") if isinstance(video, dict) else ""
 
                 # Discipline — rattachée APRÈS création, par PATCH (relation
                 # multiple : une LISTE d'URLs). Un échec ne fait PAS échouer le
@@ -1033,7 +1091,7 @@ class App(_AppBase):
                 ok += 1
                 self._ui(self._set_item_status, it, "✅ terminé", T_SUCCES)
                 self._ui(self._log,
-                         f"Téléversé{' (chunké)' if big else ''} : {it.title}  (slug={it.slug})")
+                         f"Téléversé{' (chunké)' if par_morceaux else ''} : {it.title}  (slug={it.slug})")
 
             except PodChunkedError as e:
                 it.error = f"{e} — {e.body}"

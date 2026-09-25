@@ -127,3 +127,101 @@ class TestSessionDepotHTTPS:
         from pod_chunked import PodChunkedSession
         s = PodChunkedSession(url, "DEPOT", "secret")
         assert s._logged_in is False             # rien n'est ouvert à la création
+
+
+# ── Repli automatique sur l'envoi par morceaux ─────────────────────────────
+
+GROS = 10 ** 12          # seuil inatteignable : le fichier part en envoi direct
+
+
+def _erreur_coupure_reelle(monkeypatch, fichier):
+    """Produit la VRAIE PodAPIError que lève pod_api après trois coupures
+    SSL, plutôt qu'un message écrit à la main dans le test."""
+    import requests
+    import pod_api
+    monkeypatch.setattr(pod_api.time, "sleep", lambda s: None)
+
+    class SessionCoupee:
+        headers = {}
+
+        def post(self, *a, **k):
+            raise requests.exceptions.SSLError(
+                "EOF occurred in violation of protocol (_ssl.c:2427)")
+
+    api = pod_api.PodAPI("https://pod.exemple.fr", "jeton")
+    api.session = SessionCoupee()
+    with pytest.raises(pod_api.PodAPIError) as exc:
+        api.upload_video(fichier, "t", "https://pod.exemple.fr/rest/users/7/",
+                         "https://pod.exemple.fr/rest/types/1/")
+    return exc.value
+
+
+class APIEnvoiDirect(FausseAPI):
+    """upload_video lève l'erreur fournie (ou réussit si None)."""
+
+    def __init__(self, erreur, candidats=lambda m: []):
+        super().__init__(candidats)
+        self.erreur = erreur
+        self.envois_directs = 0
+
+    def upload_video(self, *a, **k):
+        self.envois_directs += 1
+        if self.erreur:
+            raise self.erreur
+        return {"slug": "1-direct", "url": "https://pod.exemple.fr/rest/videos/1/"}
+
+
+class TestReconnaissanceCoupure:
+
+    def test_coupure_ssl_reelle_reconnue(self, module_app, monkeypatch, fichier_video):
+        err = _erreur_coupure_reelle(monkeypatch, fichier_video)
+        assert module_app.App._est_coupure_reseau(err)
+
+    @pytest.mark.parametrize("status", [400, 403, 404, 500])
+    def test_refus_du_serveur_non_reconnu(self, module_app, status):
+        from pod_api import PodAPIError
+        # Même avec un mot trompeur dans le corps : c'est une RÉPONSE du serveur.
+        err = PodAPIError(f"HTTP {status}", status=status, body="connection reset")
+        assert not module_app.App._est_coupure_reseau(err)
+
+    def test_erreur_quelconque_sans_indice_non_reconnue(self, module_app):
+        from pod_api import PodAPIError
+        assert not module_app.App._est_coupure_reseau(PodAPIError("Fichier introuvable : x"))
+
+
+class TestRepliSurEnvoiParMorceaux:
+
+    def test_coupure_bascule_et_reattribue(self, module_app, monkeypatch, fichier_video):
+        api = APIEnvoiDirect(_erreur_coupure_reelle(monkeypatch, fichier_video))
+        faux = _lot(module_app, monkeypatch, fichier_video, api, seuil=GROS)
+        assert api.envois_directs == 1
+        assert len(FauxDepot.envois) == 1                     # repli effectué
+        assert FauxDepot.envois[0]["marqueur"].startswith("upid")
+        assert [p["owner"] for _, p in api.patches] == [PROF]  # réattribuée
+        assert faux.items[0].done
+        assert any("Bascule automatique" in l for l in faux.journal)
+
+    def test_repli_puis_504_reprend_la_video(self, module_app, monkeypatch, fichier_video):
+        """Le cas qui plantait dans PodAdmin avant la mise en commun : un 504
+        pendant le REPLI doit suivre la même reprise par marqueur."""
+        api = APIEnvoiDirect(_erreur_coupure_reelle(monkeypatch, fichier_video),
+                             candidats=lambda m: [_video(m, "42")])
+        faux = _lot(module_app, monkeypatch, fichier_video, api, seuil=GROS,
+                    statut_final=504)
+        assert set(api.recherches) == {FauxDepot.envois[0]["marqueur"]}
+        assert [p["owner"] for _, p in api.patches] == [PROF]
+        assert faux.items[0].done
+
+    def test_refus_du_serveur_pas_de_repli(self, module_app, monkeypatch, fichier_video):
+        from pod_api import PodAPIError
+        api = APIEnvoiDirect(PodAPIError("HTTP 400 sur /videos/", status=400,
+                                         body='{"type": ["requis"]}'))
+        faux = _lot(module_app, monkeypatch, fichier_video, api, seuil=GROS)
+        assert FauxDepot.envois == []                          # aucun repli
+        assert not faux.items[0].done
+
+    def test_envoi_direct_reussi_sans_morceaux(self, module_app, monkeypatch, fichier_video):
+        api = APIEnvoiDirect(None)
+        faux = _lot(module_app, monkeypatch, fichier_video, api, seuil=GROS)
+        assert FauxDepot.envois == [] and api.patches == []
+        assert faux.items[0].done and faux.items[0].slug == "1-direct"
