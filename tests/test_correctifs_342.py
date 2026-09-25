@@ -548,3 +548,37 @@ class TestMesVideosApresDepot:
         assert app.myvids_multi == []
         assert app.myvids_selected is None
         assert app.myvids_videos == [] and app.myvids_filtered == []
+
+
+# ── Étape 8 : filtre recalculé après une modification ──────────────────────
+
+class TestFiltreApresModification:
+    """Filtre « Brouillon » actif ; on passe une vidéo en Public par le VRAI
+    _do_myvids_patch (API simulée) : elle doit quitter la liste affichée."""
+
+    def test_video_passee_en_public_quitte_le_filtre_brouillon(self, app, monkeypatch):
+        patches = []
+
+        class API:
+            def patch_video(self, v, payload):
+                patches.append((v.get("slug"), payload))
+
+        monkeypatch.setattr(app, "api", API())
+        app.myvids_videos = [
+            {"slug": f"b{i}", "title": f"Brouillon {i}", "is_draft": True, "channel": []}
+            for i in range(3)]
+        app.myvids_statut.set("Brouillon")
+        try:
+            app._myvids_apply_filter()
+            assert [v["slug"] for v in app.myvids_filtered] == ["b0", "b1", "b2"]
+            cible = app.myvids_videos[1]
+            app.myvids_selected = cible
+            app._do_myvids_patch(cible, {"is_draft": False}, "passée en Public")
+            app.update()                          # exécute les app._ui(…) planifiés
+            assert patches == [("b1", {"is_draft": False})]
+            assert [v["slug"] for v in app.myvids_filtered] == ["b0", "b2"]
+            assert "2 vidéo(s)" in app.myvids_count_lbl.cget("text")
+        finally:
+            app.myvids_statut.set("Tous statuts")
+            app.myvids_videos, app.myvids_filtered = [], []
+            app.myvids_selected = None

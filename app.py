@@ -2195,7 +2195,11 @@ class App(_AppBase):
             self._ui(self._log, f"✏ {slug} : {msg}")
             self._ui(self._myvids_set_msg, f"✅  {msg}", T_SUCCES)
             self._ui(self._myvids_render_detail)
-            self._ui(self._render_myvids_list)
+            # Refiltrer, pas seulement redessiner : une vidéo qui ne correspond
+            # plus au filtre actif (ex. passée en Public alors qu'on affiche
+            # les brouillons) doit quitter la liste, comme après une
+            # suppression ou une action de lot.
+            self._ui(self._myvids_apply_filter)
         except Exception as e:
             self._ui(self._log, f"❌ {slug} : {e}")
             self._ui(self._myvids_set_msg, f"❌  {message_utilisateur(e)}", T_ERREUR)
