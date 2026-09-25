@@ -240,3 +240,61 @@ class TestJetonLimiteALInstance:
             api.replace_video_file({"url": "https://attaquant.exemple.com/rest/videos/7/"},
                                    fichier_video)
         assert api.session.appels == []
+
+
+# ── Étape 5 : position d'envoi par morceaux vérifiée ───────────────────────
+
+class TestPositionEnvoiParMorceaux:
+    """Fichier de 5 octets, morceaux de 2 → trois morceaux (0-1, 2-3, 4-4).
+    `_send_one_chunk` et `_complete` sont remplacés sur l'INSTANCE : aucun
+    réseau, et on observe exactement ce que la boucle envoie."""
+
+    @staticmethod
+    def _session(offsets_renvoyes):
+        from pod_chunked import PodChunkedSession
+        s = PodChunkedSession("https://pod.exemple.fr", "DEPOT", "x")
+        s._logged_in = True
+        s.envois = []
+        s.finalisations = []
+        reponses = iter(offsets_renvoyes)
+
+        def faux_envoi(chunk, start, end, total, filename, upload_id, **kw):
+            s.envois.append((start, end, bytes(chunk)))
+            return {"upload_id": "U1", "offset": next(reponses)}
+
+        def fausse_finalisation(upload_id, md5, target_slug=""):
+            s.finalisations.append((upload_id, md5))
+            return "slug-final"
+
+        s._send_one_chunk = faux_envoi
+        s._complete = fausse_finalisation
+        return s
+
+    @pytest.fixture
+    def cinq_octets(self):
+        fd, chemin = tempfile.mkstemp(suffix=".mp4")
+        with os.fdopen(fd, "wb") as f:
+            f.write(b"ABCDE")
+        yield chemin
+        os.remove(chemin)
+
+    def test_serveur_coherent(self, cinq_octets):
+        s = self._session([2, 4, 5])
+        assert s.upload_video_chunked(cinq_octets, chunk_size=2) == "slug-final"
+        assert s.envois == [(0, 1, b"AB"), (2, 3, b"CD"), (4, 4, b"E")]
+        assert len(s.finalisations) == 1
+
+    def test_offset_faux_au_deuxieme_morceau(self, cinq_octets):
+        from pod_chunked import PodChunkedError
+        s = self._session([2, 3, 5])      # le serveur dit 3 au lieu de 4
+        with pytest.raises(PodChunkedError, match="Désaccord de position"):
+            s.upload_video_chunked(cinq_octets, chunk_size=2)
+        assert len(s.envois) == 2, s.envois       # aucun 3e envoi
+        assert s.finalisations == []              # _complete jamais appelé
+
+    def test_offset_en_avance_refuse_aussi(self, cinq_octets):
+        from pod_chunked import PodChunkedError
+        s = self._session([4, 4, 5])      # le serveur prétend avoir tout reçu
+        with pytest.raises(PodChunkedError):
+            s.upload_video_chunked(cinq_octets, chunk_size=2)
+        assert len(s.envois) == 1 and s.finalisations == []

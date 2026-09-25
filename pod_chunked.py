@@ -276,7 +276,20 @@ class PodChunkedSession:
                     if resp.get("upload_id"):
                         upload_id = resp["upload_id"]
                     if resp.get("offset") is not None:
-                        offset = int(resp["offset"])
+                        confirme = int(resp["offset"])
+                        # Le fichier est lu SÉQUENTIELLEMENT : le morceau suivant
+                        # commence forcément à end + 1. Si le serveur confirme
+                        # une autre position, adopter la sienne décalerait tout
+                        # le reste de l'envoi et produirait un fichier corrompu,
+                        # repéré au mieux par l'échec du md5 à la finalisation,
+                        # au pire jamais. On s'arrête net, sans envoyer la suite.
+                        if confirme != end + 1:
+                            raise PodChunkedError(
+                                f"Désaccord de position avec le serveur : il "
+                                f"confirme {confirme} octet(s) reçus, "
+                                f"{end + 1} attendus. Envoi interrompu pour "
+                                f"éviter un fichier corrompu ; relancez le dépôt.")
+                        offset = confirme
                     else:
                         offset = end + 1
                 else:
