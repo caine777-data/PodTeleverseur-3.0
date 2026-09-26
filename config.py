@@ -315,3 +315,57 @@ UPDATE_FALLBACK_URL = "https://github.com/caine777-data/podteleverseur-releases/
 # Délai maximal accordé à la vérification. Volontairement court : elle ne doit
 # JAMAIS retarder le démarrage, ni l'empêcher si le réseau est lent ou coupé.
 UPDATE_TIMEOUT_S = 5
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  BLOCAGE À DISTANCE — interrupteur manuel, INDÉPENDANT de la mise à jour
+# ════════════════════════════════════════════════════════════════════════════
+# Repris de PodAdmin (voir BLOCAGE.md). Contrairement à la mise à jour
+# obligatoire ci-dessus (liée à un numéro de version), ce mécanisme rend
+# TOUTES les copies installées inutilisables — puis les débloque — sur simple
+# décision, sans publier de nouvelle version. Contrôlé depuis GitHub Actions
+# (workflow "Build installers" → champ "blocage"), PARAMÉTRÉ PAR DÉFAUT SUR
+# « ne rien changer » : il ne se déclenche jamais tout seul.
+#
+# Fichier SÉPARÉ (etat.json) sur le MÊME dépôt public que version.json, pour
+# ne jamais interférer avec la mise à jour ni exiger d'installation en plus.
+#
+# Mettre à "" pour désactiver complètement la vérification.
+BLOCAGE_URL = ("https://raw.githubusercontent.com/"
+               "caine777-data/podteleverseur-releases/main/etat.json")
+BLOCAGE_PERIODE_MS = 3600 * 1000     # délai entre deux vérifications (1 heure)
+BLOCAGE_TIMEOUT_S = 5                 # jamais bloquant : délai volontairement court
+
+
+# Mémorisation locale (tient hors ligne). Même principe que le verrou de mise
+# à jour obligatoire : seule une réponse RÉSEAU RÉELLE du serveur change
+# l'état mémorisé. Un réseau coupé, un dépôt injoignable ou une adresse
+# désactivée ne doivent JAMAIS déclencher, ni lever, un blocage — sans quoi
+# couper sa connexion suffirait à contourner un blocage déjà notifié.
+
+def enregistrer_blocage_distant(bloque: bool) -> None:
+    """Mémorise localement l'état de blocage confirmé par le serveur.
+
+    Appelée uniquement après une réponse réseau réelle et exploitable (voir
+    `maj.etat_blocage`) — jamais de manière spéculative."""
+    try:
+        cfg = load_config()
+        if bloque:
+            cfg["blocage_distant"] = True
+        else:
+            cfg.pop("blocage_distant", None)
+        save_config(cfg)
+    except Exception:
+        pass          # ne jamais lever depuis un enregistrement de confort
+
+
+def blocage_distant_actif() -> bool:
+    """Vrai si un blocage à distance a été mémorisé localement.
+
+    Vérifié EN TOUT PREMIER au démarrage, avant tout accès réseau : un
+    blocage déjà confirmé doit s'appliquer sans attendre la vérification
+    périodique, sinon l'application resterait utilisable pendant ce délai."""
+    try:
+        return load_config().get("blocage_distant") is True
+    except Exception:
+        return False

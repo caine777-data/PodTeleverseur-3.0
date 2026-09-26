@@ -150,3 +150,19 @@ vidéo d'un collègue** : les droits viennent du jeton, et se règlent côté Po
    principale et que la croix ne ferme pas la modale.
 4. Cas 504 : la modale doit se clore avec le message « le serveur termine son
    assemblage », sans relancer l'encodage automatiquement.
+
+## Blocage à distance (repris de PodAdmin)
+
+Champ **blocage** dans Run workflow : « bloquer » rend toutes les copies
+installées inutilisables (voile « Pod Téléverseur n'est pas disponible »,
+seul Quitter reste possible) ; « débloquer » les rétablit. Ne compile rien :
+écrit seulement `etat.json` sur `podteleverseur-releases`. Par défaut « ne rien
+changer ». Détails : `BLOCAGE.md`. Tests : `tests/test_blocage_distant.py`
+(28 tests, 21 mutations).
+
+Propre au Téléverseur : un téléversement en cours est interrompu proprement
+au moment du blocage (même arrêt que le bouton 🛑).
+
+À tester sur GitHub, une fois la branche poussée : Run workflow → blocage =
+bloquer, vérifier `etat.json` sur le dépôt public et le voile sur un poste ;
+puis débloquer.

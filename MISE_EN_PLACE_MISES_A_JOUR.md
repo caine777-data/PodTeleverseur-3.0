@@ -99,6 +99,13 @@ Onglet **Actions** → **Run workflow** :
    absent ne peut jamais DÉCLENCHER un nouveau blocage, seulement le
    maintenir une fois qu'il a été confirmé.
 
+## Étape 4 ter — Bloquer ou débloquer toutes les copies installées
+
+Indépendant de la mise à jour : champ **blocage** du formulaire (« bloquer » /
+« débloquer » ; laisser « ne rien changer » pour une publication). Ne compile
+rien, ne publie aucune version : écrit seulement `etat.json` sur le dépôt
+public. Détails dans **`BLOCAGE.md`**.
+
 ## Étape 5 — Vérifier
 
 1. Le dépôt public contient un `version.json` à la bonne version, et une

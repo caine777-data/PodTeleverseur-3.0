@@ -53,6 +53,13 @@ gros fichiers).
     technique, choisi au cas par cas lors de chaque publication, et un
     réseau coupé ne le déclenche jamais (voir `recuperer_info`, qui renvoie
     alors None — aucune information, donc aucun blocage possible).
+
+BLOCAGE À DISTANCE (etat.json)
+------------------------------
+Second fichier, sur le même dépôt public, INDÉPENDANT de la mise à jour :
+`{"bloque": true}` ou `{"bloque": false}`, écrit par le workflow (champ
+« blocage », par défaut « ne rien changer »). Voir `etat_blocage` et
+BLOCAGE.md.
 """
 
 __author__ = "Cédric MONNA"
@@ -94,11 +101,16 @@ def comparer_versions(a: str, b: str) -> int:
     return 0
 
 
-def recuperer_info(url: str, timeout: float = 5.0, journal=None) -> dict | None:
-    """Télécharge et analyse le fichier de version. Renvoie None en cas d'échec.
+def _telecharger_json(url: str, timeout: float, journal=None,
+                      quoi: str = "vérification de mise à jour",
+                      fichier: str = "fichier de version") -> dict | None:
+    """Télécharge et décode un fichier JSON distant. Renvoie None en cas d'échec.
 
     Toute erreur est absorbée : réseau coupé, adresse fausse, dépôt supprimé,
     JSON malformé… La vérification est un confort, pas une dépendance.
+    Factorisé entre `recuperer_info` (version.json) et `etat_blocage`
+    (etat.json) : même dépôt public, même prudence réseau. `quoi` et
+    `fichier` ne servent qu'aux messages du Journal.
 
     `journal` : fonction appelée avec un message en cas d'échec. Sans elle,
     l'échec est totalement silencieux — pratique pour l'utilisateur, mais
@@ -129,14 +141,14 @@ def recuperer_info(url: str, timeout: float = 5.0, journal=None) -> dict | None:
         r = requests.get(url, headers=entetes, timeout=timeout)
         if r.status_code != 200:
             if journal:
-                journal(f"vérification de mise à jour : HTTP {r.status_code}")
+                journal(f"{quoi} : HTTP {r.status_code}")
             return None
         brut = r.text
     except ImportError:
         pass                             # on tente urllib plus bas
     except Exception as e:
         if journal:
-            journal(f"vérification de mise à jour impossible ({type(e).__name__}) : {e}")
+            journal(f"{quoi} impossible ({type(e).__name__}) : {e}")
         return None
 
     # 2. Repli : urllib
@@ -149,20 +161,60 @@ def recuperer_info(url: str, timeout: float = 5.0, journal=None) -> dict | None:
                 brut = reponse.read().decode("utf-8", "replace")
         except Exception as e:
             if journal:
-                journal(f"vérification de mise à jour impossible ({type(e).__name__}) : {e}")
+                journal(f"{quoi} impossible ({type(e).__name__}) : {e}")
             return None
 
     try:
         donnees = json.loads(brut)
     except Exception as e:
         if journal:
-            journal(f"fichier de version illisible : {e}")
+            journal(f"{fichier} illisible : {e}")
         return None
-    if not isinstance(donnees, dict) or not donnees.get("version"):
+    if not isinstance(donnees, dict):
+        if journal:
+            journal(f"{fichier} présent mais mal formé (objet JSON attendu).")
+        return None
+    return donnees
+
+
+def recuperer_info(url: str, timeout: float = 5.0, journal=None) -> dict | None:
+    """Télécharge et analyse le fichier de version. Renvoie None en cas d'échec
+    (voir `_telecharger_json`), ou si le fichier n'a pas de numéro exploitable."""
+    donnees = _telecharger_json(url, timeout, journal=journal)
+    if donnees is None:
+        return None
+    if not donnees.get("version"):
         if journal:
             journal("fichier de version présent mais sans numéro exploitable.")
         return None
     return donnees
+
+
+def etat_blocage(url: str, timeout: float = 5.0, journal=None) -> bool | None:
+    """Interroge le fichier d'état du blocage à distance (etat.json).
+
+    Renvoie True (bloqué), False (autorisé) ou None si aucune réponse
+    exploitable n'a été obtenue (réseau coupé, fichier absent, adresse
+    désactivée…) — un None ne doit JAMAIS être interprété comme un
+    déblocage : voir `config.enregistrer_blocage_distant`, qui ne change
+    l'état mémorisé localement que sur une réponse réseau réelle.
+
+    Absence du champ `bloque` : aucune réponse exploitable, jamais un
+    déblocage implicite."""
+    donnees = _telecharger_json(url, timeout, journal=journal,
+                                quoi="vérification du blocage",
+                                fichier="fichier d'état")
+    if donnees is None:
+        return None
+    bloque = donnees.get("bloque")
+    # ⚠️ isinstance(bloque, bool), et non `bool(bloque)` : un champ absent,
+    # une chaîne ("oui"), ou tout autre truthy accidentel ne doit JAMAIS être
+    # silencieusement converti en blocage. Seul un booléen explicite compte.
+    if not isinstance(bloque, bool):
+        if journal:
+            journal("fichier d'état présent mais sans champ 'bloque' exploitable.")
+        return None
+    return bloque
 
 
 def etat_mise_a_jour(version_actuelle: str, url: str, timeout: float = 5.0,

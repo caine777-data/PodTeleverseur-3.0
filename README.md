@@ -194,7 +194,9 @@ reprise de cette v3, `app.py` annonçait 3.0.0 et `config.py` 3.1.0 — c'est
 permanence. `version.txt` doit concorder : un test le vérifie.
 
 La mise en place (dépôt public, jeton, secret) et la procédure de publication
-obligatoire sont décrites dans **`MISE_EN_PLACE_MISES_A_JOUR.md`**.
+obligatoire sont décrites dans **`MISE_EN_PLACE_MISES_A_JOUR.md`**. Le
+**blocage à distance** (« bloquer » / « débloquer » dans Run workflow, repris
+de PodAdmin) est décrit dans **`BLOCAGE.md`**.
 
 ## Onglet « Mes vidéos »
 

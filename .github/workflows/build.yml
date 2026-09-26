@@ -47,6 +47,21 @@ on:
           jour sera alors bloqué.
         required: false
         default: ""
+      blocage:
+        description: >-
+          Blocage à distance, INDÉPENDANT de la mise à jour ci-dessus (voir
+          BLOCAGE.md). « bloquer » : toutes les applications installées
+          affichent « Pod Téléverseur n'est pas disponible » et deviennent
+          inutilisables (seul Quitter reste possible). « débloquer » : elles
+          redeviennent normales. Ces deux choix ne compilent rien. Laisser
+          « ne rien changer » pour une compilation/publication normale — état
+          par défaut, ce blocage ne se déclenche donc jamais tout seul.
+        type: choice
+        options:
+          - ne rien changer
+          - bloquer
+          - débloquer
+        default: ne rien changer
 
 # Moindre privilège : par défaut, le jeton GITHUB_TOKEN de chaque job ne peut
 # que LIRE le dépôt. Les jobs de compilation n'ont rien à y écrire ; seul le
@@ -57,6 +72,8 @@ permissions:
 jobs:
   # ─────────────────────────────── WINDOWS ───────────────────────────────
   build-windows:
+    # Ignoré quand on actionne le blocage (voir le job « blocage »).
+    if: inputs.blocage != 'bloquer' && inputs.blocage != 'débloquer'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -162,6 +179,7 @@ jobs:
 
   # ──────────────────────────────── macOS ────────────────────────────────
   build-macos:
+    if: inputs.blocage != 'bloquer' && inputs.blocage != 'débloquer'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -221,12 +239,46 @@ jobs:
           name: PodTeleverseur-macOS-DMG
           path: dist/PodTeleverseur-macOS.dmg
 
+  # ──────────────────────── Blocage à distance ─────────────────────────
+  # Ne compile rien, ne concerne aucun numéro de version : écrit seulement
+  # etat.json sur le dépôt PUBLIC, lu par toutes les applications installées
+  # (au démarrage puis toutes les heures). RELEASES_TOKEN : même jeton, déjà
+  # configuré, que celui qui publie version.json. Voir BLOCAGE.md.
+  blocage:
+    name: Blocage à distance
+    if: inputs.blocage == 'bloquer' || inputs.blocage == 'débloquer'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Publier l'état
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          DEPOT: ${{ vars.RELEASES_REPO || format('{0}/podteleverseur-releases', github.repository_owner) }}
+          BLOQUE: ${{ inputs.blocage == 'bloquer' }}
+        run: |
+          set -e
+          if [ -z "$RELEASES_TOKEN" ]; then
+            echo "::error::Secret RELEASES_TOKEN absent : rien n'a été publié (voir BLOCAGE.md)."
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${RELEASES_TOKEN}@github.com/${DEPOT}.git" public
+          printf '{\n  "bloque": %s\n}\n' "$BLOQUE" > public/etat.json
+          echo "Contenu publié sur $DEPOT :" && cat public/etat.json
+          cd public
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add etat.json
+          git diff --cached --quiet || git commit -m "Etat"
+          git push
+
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     # Publication sur tag v*, OU sur « Run workflow » avec le champ version
     # rempli. Champ vide = compilation d'essai, rien n'est publié.
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
+    # Jamais pendant un blocage/déblocage, même si le champ version est rempli.
+    if: (startsWith(github.ref, 'refs/tags/v') || inputs.version != '') && inputs.blocage != 'bloquer' && inputs.blocage != 'débloquer'
     # Le jeton automatique de GitHub Actions est en LECTURE SEULE par défaut :
     # sans cette autorisation, la création de la Release échoue en 403.
     permissions:

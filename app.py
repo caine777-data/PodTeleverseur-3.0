@@ -215,6 +215,17 @@ class App(_AppBase):
         self._build_ui()
         self._show_tab("upload")
 
+        # ── Blocage à distance (interrupteur manuel, repris de PodAdmin,
+        # INDÉPENDANT de la mise à jour obligatoire ci-dessous) : contrôle local
+        # immédiat — un blocage déjà confirmé s'applique sans attendre le
+        # réseau —, puis surveillance périodique. Placé AVANT le contrôle de
+        # mise à jour obligatoire et avant son `return` : les deux mécanismes
+        # restent orthogonaux, l'un ne conditionne jamais l'autre.
+        self._voile_blocage = None
+        if cfg.blocage_distant_actif():
+            self._bloquer_application()
+        self.after(2000, self._surveiller_blocage)
+
         # ⚠️ CONTRÔLE LOCAL DU BLOCAGE, EN TOUT PREMIER — avant l'auto-connexion
         # et avant l'assistant : un blocage déjà confirmé par le serveur doit
         # s'appliquer SANS ATTENDRE le réseau, sinon la personne pourrait
@@ -3649,6 +3660,97 @@ class App(_AppBase):
                              "(réseau indisponible) ; le verrou local, s'il "
                              "existe, n'est pas modifié.")
         self._run(travail)
+
+    # ── Blocage à distance (interrupteur manuel) ────────────────────────────
+    #
+    # Indépendant de la mise à jour obligatoire : ce mécanisme ne dépend
+    # d'aucun numéro de version. Piloté depuis GitHub Actions (workflow
+    # "Build installers" → champ "blocage", PARAMÉTRÉ PAR DÉFAUT SUR « ne rien
+    # changer »), il ne fait qu'écrire `etat.json` sur le dépôt public — voir
+    # BLOCAGE.md. Invisible tant que rien n'est bloqué : ni bandeau ni message.
+
+    def _surveiller_blocage(self):
+        """Lit l'état de blocage publié, EN ARRIÈRE-PLAN, puis se replanifie.
+
+        Ne concurrence jamais le démarrage ni l'usage normal : l'appli
+        n'attend jamais cette réponse, et une panne réseau ne change rien à
+        l'état affiché (voir `_appliquer_blocage`)."""
+        if not getattr(cfg, "BLOCAGE_URL", ""):
+            return
+
+        def travail():
+            try:
+                bloque = maj.etat_blocage(
+                    getattr(cfg, "BLOCAGE_URL", ""),
+                    getattr(cfg, "BLOCAGE_TIMEOUT_S", 5))
+            except Exception:
+                bloque = None          # jamais bloquant
+            self._ui(self._appliquer_blocage, bloque)
+        self._run(travail)
+        self.after(getattr(cfg, "BLOCAGE_PERIODE_MS", 3600 * 1000), self._surveiller_blocage)
+
+    def _appliquer_blocage(self, bloque):
+        """Seule une réponse RÉSEAU RÉELLE change l'état ; `bloque=None`
+        (réseau coupé, dépôt injoignable, adresse désactivée…) ne modifie
+        RIEN — ni pour bloquer, ni pour débloquer."""
+        if bloque is None:
+            return
+        if bloque != cfg.blocage_distant_actif():
+            cfg.enregistrer_blocage_distant(bloque)
+        if bloque:
+            self._bloquer_application()
+        elif self._voile_blocage is not None:
+            try:
+                self._voile_blocage.destroy()
+            except Exception:
+                pass
+            self._voile_blocage = None
+            self._log("ℹ Blocage à distance levé : application de nouveau disponible.")
+
+    def _bloquer_application(self):
+        """Recouvre TOUTE la fenêtre : plus rien n'est utilisable, sauf
+        Quitter. Message volontairement neutre, sans raison donnée — ce
+        n'est ni une fenêtre d'erreur ni un dispositif de licence, seulement
+        un interrupteur d'urgence actionné à la main (voir BLOCAGE.md).
+
+        Les fenêtres secondaires ouvertes sont fermées : les laisser par-dessus
+        le voile permettrait de continuer à s'en servir.
+
+        Propre au Téléverseur : un lot de téléversement en cours reçoit la
+        demande d'arrêt (bouton 🛑). Sans cela, l'envoi continuerait derrière
+        le voile, alors que l'utilisation est suspendue. L'arrêt est propre :
+        aucune vidéo n'est créée à moitié (voir `_depot_interrompre`)."""
+        if getattr(self, "depot_en_cours", False):
+            self.depot_interrompu.set()
+            self._log("🛑 Blocage à distance : le téléversement en cours est interrompu.")
+        for fenetre in self.winfo_children():
+            if isinstance(fenetre, ctk.CTkToplevel):
+                try:
+                    fenetre.destroy()
+                except Exception:
+                    pass
+        if self._voile_blocage is None:
+            self._voile_blocage = ctk.CTkFrame(self, fg_color=self.cget("fg_color"),
+                                               corner_radius=0)
+            centre = ctk.CTkFrame(self._voile_blocage, fg_color="transparent")
+            centre.place(relx=0.5, rely=0.5, anchor="center")
+            ctk.CTkLabel(centre, text="Pod Téléverseur n'est pas disponible",
+                         font=ctk.CTkFont(size=17, weight="bold"),
+                         text_color=T_ERREUR).pack()
+            ctk.CTkLabel(centre, text="L'utilisation de l'application est suspendue.",
+                         font=ctk.CTkFont(size=13), text_color=T_SECONDAIRE
+                         ).pack(pady=(8, 24))
+            # Seule issue, comme pour la mise à jour obligatoire : on peut
+            # toujours quitter proprement (voir l'incident `focus_force` noté
+            # dans `_bloquer_demarrage` — même prudence ici : aucun focus forcé).
+            ctk.CTkButton(centre, text="Quitter", width=160, height=H_PRINCIPAL,
+                          fg_color=C_ACTION, hover_color=C_ACTION_SURV,
+                          font=ctk.CTkFont(size=13, weight="bold"),
+                          command=self._quitter_depuis_blocage).pack()
+            self._log("⚠️ Blocage à distance activé : application suspendue.")
+        self._voile_blocage.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._voile_blocage.lift()
+        self._voile_blocage.focus_set()
 
     def _bloquer_demarrage(self, info: dict):
         """Fenêtre modale, SANS échappatoire, en cas de mise à jour obligatoire.
