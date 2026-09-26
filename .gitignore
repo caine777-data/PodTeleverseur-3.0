@@ -21,3 +21,8 @@ scripts/.env
 # OS
 .DS_Store
 Thumbs.db
+
+# Rapports des sondes : ils contiennent un identifiant réel, jamais dans le dépôt.
+rapport_*.txt
+# Jeton déposé pour la sonde : jamais dans le dépôt (normalement supprimé à la lecture).
+jeton.txt
