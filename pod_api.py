@@ -230,6 +230,25 @@ class PodAPI:
         data = self._get("/users/", {"search": query, "limit": 25})
         return data.get("results", []) if isinstance(data, dict) else (data or [])
 
+    def find_user_by_username(self, username: str) -> dict | None:
+        """Le compte dont le nom d'utilisateur est EXACTEMENT `username`, ou None.
+
+        Filtre serveur `?username=` : la sonde verifier_identifiant.py a établi
+        qu'il renvoie exactement le compte demandé, alors que `?search=` est
+        plein texte (12 comptes pour un identifiant complet) et que
+        `?username__iexact=` est ignoré. On vérifie malgré tout l'égalité côté
+        client : si le serveur ignorait un jour le filtre, il renverrait tout
+        l'annuaire, et le premier résultat ne serait pas le bon compte. Plus
+        d'un compte exact → None (ambigu : on refuse plutôt que deviner)."""
+        cible = str(username or "").strip().lower()
+        if not cible:
+            return None
+        data = self._get("/users/", {"username": cible, "limit": 5})
+        comptes = data.get("results", []) if isinstance(data, dict) else (data or [])
+        exacts = [u for u in comptes
+                  if str(u.get("username", "")).strip().lower() == cible]
+        return exacts[0] if len(exacts) == 1 else None
+
     def get_all_users(self, max_pages: int = 80) -> list[dict]:
         """Récupère TOUS les utilisateurs en suivant la pagination de l'API."""
         return self._paginate("/users/", {"limit": 100}, max_pages=max_pages)

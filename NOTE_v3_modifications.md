@@ -110,6 +110,29 @@ sont embarqués dans `config.py`, toujours présents).
 | Pendant un lot : ajout permis (la vidéo part à la suite), retraits bloqués | Retirer une ligne décalait la liste et faisait sauter la vidéo suivante sans rien dire | `TestListeProtegeePendantUnLot`, `TestLotInterrompu` |
 | Ajout de fichiers : chemins normalisés, bilan exact, confirmation avant de renvoyer un fichier déjà envoyé dans la session | Sous Windows, le même fichier entrait deux fois selon son écriture ; un fichier retiré puis réajouté créait un doublon sur Pod | `TestAjoutDeFichiers` |
 
+### Propriétaire désigné par l'identifiant universitaire
+
+La sonde `verifier_identifiant.py` (26/09/2026) a montré qu'un jeton
+d'enseignant voit TOUT l'annuaire (41 comptes) : la liste permettait de
+choisir n'importe quel collègue, ou un compte local comme DEPOT, comme
+propriétaire — et c'est ce choix qui décide des vidéos que « Mes vidéos »
+permet de modifier.
+
+| Changement | Pourquoi | Test |
+|---|---|---|
+| Le propriétaire est **saisi** (identifiant universitaire), plus choisi dans la liste : onglet Configuration, bouton « 🎯 Saisir l'identifiant… », étape 2 de l'assistant | Plus d'erreur de compte, plus d'annuaire affiché | `TestFenetreDeSaisie`, `TestOngletConfiguration` |
+| Format strict `aaa0000a` (3 lettres, 4 chiffres, 1 lettre) | Les 32 comptes d'usagers le suivent tous ; les 9 autres sont des comptes locaux d'administration, écartés d'office | `TestFormat` |
+| Recherche exacte (`?username=` + égalité vérifiée côté client) | `?search=` est plein texte (12 comptes pour un identifiant complet) | `TestRechercheExacte`, `TestResolution` |
+| Envoi refusé si le propriétaire enregistré n'a pas ce format | Un poste configuré avant cette version peut pointer vers un compte local | `TestGardeFouAuLancement` |
+
+Inchangé : les **co-propriétaires** se choisissent toujours dans la liste de
+toutes les personnes (chacun associe qui il veut), et « Mes vidéos » affiche
+les vidéos du compte ET celles dont il est co-propriétaire.
+
+⚠️ **Limite** : la saisie évite les erreurs, mais ne protège pas contre un
+usage malveillant. La sonde a montré que le jeton testé peut **modifier la
+vidéo d'un collègue** : les droits viennent du jeton, et se règlent côté Pod.
+
 ## À tester sur l'instance
 0. **3.4.2** — Déposer un gros fichier (> 150 Mo) sur l'instance de TEST :
    vérifier que le slug porte le marqueur `upid…`, que le titre est propre et

@@ -10,7 +10,7 @@ l'Université de Toulouse. Version légère destinée aux enseignants :
   • Mes vidéos : gestion des vidéos du propriétaire sélectionné (renommer,
     statut, type, co-propriétaires, sous-titres, remplacer le fichier &
     ré-encoder, supprimer). N'affiche que les vidéos de ce compte.
-  • Configuration (connexion à l'instance + choix du compte déposant).
+  • Configuration (connexion à l'instance + identifiant du compte déposant).
   • Journal des opérations.
 Dérivée de PodAdmin : les modules d'administration (groupes, réaffectation,
 inventaire…) ont été retirés ; « Mes vidéos » reprend l'essentiel de l'onglet
@@ -28,6 +28,7 @@ __license__     = "Usage interne — Université de Toulouse"
 
 
 import os
+import re
 import sys
 import threading
 import uuid
@@ -477,7 +478,7 @@ class App(_AppBase):
         ctk.CTkLabel(common, text="Propriétaire des vidéos :",
                      font=ctk.CTkFont(weight="bold")).grid(
             row=4, column=0, columnspan=4, padx=12, pady=(6, 0), sticky="w")
-        ctk.CTkButton(common, text="🎯  Choisir le propriétaire…", width=240,
+        ctk.CTkButton(common, text="🎯  Saisir l'identifiant…", width=240,
                       command=self._choose_upload_owner, fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).grid(
             row=5, column=0, columnspan=2, padx=12, pady=(2, 10), sticky="w")
         self.owner_status_lbl = ctk.CTkLabel(common, text="⚠️ à définir avant l'envoi",
@@ -948,44 +949,75 @@ class App(_AppBase):
         # prévient l'onglet que le compte affiché a peut-être changé.
         self._myvids_notify_owner_changed()
 
-    def _choose_upload_owner(self):
-        """Ouvre le sélecteur pour choisir explicitement le PROPRIÉTAIRE des vidéos.
+    # Le propriétaire n'est plus choisi dans l'annuaire de TOUS les comptes :
+    # l'enseignant SAISIT son identifiant universitaire (ex. abc1234a). La
+    # sonde verifier_identifiant.py (26/09/2026) a montré qu'un jeton
+    # d'enseignant voit tout l'annuaire : la liste permettait de choisir
+    # n'importe quel collègue — ou un compte local d'administration comme
+    # DEPOT —, et c'est ce choix qui décide des vidéos que « Mes vidéos »
+    # permet de modifier. La saisie garde l'enseignant de l'erreur ; elle ne
+    # remplace pas les droits du jeton, qui se règlent côté Pod.
+    #
+    # Les CO-propriétaires, eux, restent choisis dans la liste complète :
+    # chacun peut associer qui il veut à ses vidéos (OwnerPicker).
 
-        Le compte choisi s'applique à TOUT le lot en cours. On présélectionne le
-        compte du token (l'agent) pour que le choix se fasse en un clic, tout en
-        restant modifiable.
+    @staticmethod
+    def _normaliser_identifiant(texte) -> str:
+        """Identifiant tel qu'on le compare : sans espaces, en minuscules."""
+        return str(texte or "").strip().lower()
 
-        Détail technique important : OwnerPicker compare les URLs de comptes AVEC
-        leur slash final. La clé de présélection doit donc être l'URL BRUTE du
-        compte (telle que renvoyée par l'API), sinon rien n'apparaît coché."""
+    @staticmethod
+    def _identifiant_valide(texte) -> bool:
+        """Vrai si `texte` a la forme d'un identifiant universitaire.
+        Écarte d'office les comptes locaux d'administration (DEPOT…)."""
+        return bool(re.match(cfg.IDENTIFIANT_FORMAT, App._normaliser_identifiant(texte)))
+
+    def _resoudre_identifiant(self, texte):
+        """(Thread) Retrouve le compte Pod d'un identifiant universitaire.
+
+        Renvoie (compte, "") si le compte existe, sinon (None, message à
+        afficher). Aucune approximation : format strict, puis égalité exacte
+        du nom d'utilisateur (voir PodAPI.find_user_by_username)."""
+        ident = self._normaliser_identifiant(texte)
+        if not self._identifiant_valide(ident):
+            return None, (f"« {ident or '(vide)'} » n'est pas un identifiant universitaire : "
+                          "3 lettres, 4 chiffres et 1 lettre (ex. abc1234d).")
+        if not self.api:
+            return None, "Connectez-vous d'abord (onglet Configuration)."
+        try:
+            compte = self.api.find_user_by_username(ident)
+        except Exception as e:
+            return None, f"Recherche impossible : {message_utilisateur(e)}"
+        if not compte or not compte.get("url"):
+            return None, (f"Aucun compte de la plateforme ne porte l'identifiant « {ident} ». "
+                          "Vérifiez-le ; s'il est exact, contactez le support.")
+        return compte, ""
+
+    def _demander_identifiant(self, intro: str, apres=None):
+        """Ouvre la fenêtre de saisie de l'identifiant ; `apres()` est appelée
+        une fois le propriétaire enregistré."""
         if not self.api:
             self.global_msg.configure(text="Connectez-vous d'abord (onglet Configuration).",
                                       text_color=T_ALERTE)
             self._show_tab("config")
             return
 
-        def on_chosen(user: dict):
-            # Enregistre le compte choisi comme propriétaire du lot.
-            self.config_data["agent_username"] = user.get("username", "")
-            self.config_data["agent_owner_url"] = user.get("url", "")
-            cfg.save_config(self.config_data)
-            # Cohérence avec l'onglet Configuration (filtre + coche) et la barre latérale.
-            self.agent_lbl.configure(text=f"Dépôt au nom de :\n{user.get('username','')}")
-            if hasattr(self, "agent_filter"):
-                self.agent_filter.delete(0, "end")
-                self.agent_filter.insert(0, user.get("username", ""))
-                self._render_users()
-            self._refresh_owner_status()
-            self._log(f"Propriétaire des vidéos défini : {user.get('username','')}.")
+        def trouve(compte):
+            self._pick_agent(compte)
+            self._log(f"Propriétaire des vidéos défini : {compte.get('username', '')}.")
+            if apres:
+                apres()
 
-        # Présélection = compte actuellement enregistré (URL brute → clé de coche).
-        OwnerPicker(
-            self, on_done=lambda *_: None, single=True, on_single=on_chosen,
-            title="Choisir le propriétaire des vidéos",
-            intro=("Au nom de quel compte les vidéos seront-elles déposées ?\n"
-                   "Cliquez sur le compte concerné. Ce choix s'applique à tout le lot."),
-            prefilter=self.config_data.get("agent_username", ""),
-        )
+        actuel = self.config_data.get("agent_username", "")
+        IdentifiantDialog(self, on_found=trouve, intro=intro,
+                          prefill=actuel if self._identifiant_valide(actuel) else "")
+
+    def _choose_upload_owner(self):
+        """Demande l'identifiant universitaire du PROPRIÉTAIRE des vidéos."""
+        self._demander_identifiant(
+            "Au nom de quel compte les vidéos seront-elles déposées ?\n"
+            "Saisissez VOTRE identifiant universitaire (ex. abc1234d).\n"
+            "Ce choix s'applique à tout le lot.")
 
     # ── Lancement du téléversement ───────────────────────────────────────
 
@@ -1006,6 +1038,16 @@ class App(_AppBase):
         if not owner_url:
             self.global_msg.configure(
                 text="⚠️ Choisissez d'abord le propriétaire des vidéos.",
+                text_color=T_ALERTE)
+            self._choose_upload_owner()
+            return
+        # Un propriétaire enregistré AVANT la saisie par identifiant peut être
+        # un compte local (DEPOT, compte d'admin…) : on exige un identifiant
+        # universitaire, sans quoi on redemande. Pas d'envoi en attendant.
+        if not self._identifiant_valide(self.config_data.get("agent_username", "")):
+            self.global_msg.configure(
+                text="⚠️ Le propriétaire enregistré n'est pas un identifiant universitaire : "
+                     "saisissez le vôtre.",
                 text_color=T_ALERTE)
             self._choose_upload_owner()
             return
@@ -1687,8 +1729,8 @@ class App(_AppBase):
         elif not owner_url:
             self.myvids_owner_lbl.configure(
                 text="⚠️  Aucun propriétaire sélectionné. Ouvrez l'onglet Téléversement "
-                     "et cliquez sur « 🎯 Choisir le propriétaire… ». Cet onglet affichera "
-                     "alors uniquement les vidéos de ce compte.",
+                     "et cliquez sur « 🎯 Saisir l'identifiant… ». Cet onglet affichera "
+                     "alors les vidéos de ce compte et celles dont il est co-propriétaire.",
                 text_color=T_ALERTE)
             self.myvids_refresh_btn.configure(state="disabled")
         else:
@@ -3019,30 +3061,38 @@ class App(_AppBase):
 
         ctk.CTkFrame(frame, height=1, fg_color=C_NEUTRE).pack(fill="x", pady=8)
 
-        # — Agent déposant —
+        # — Propriétaire des vidéos : identifiant universitaire —
+        # Plus d'annuaire ici (voir _normaliser_identifiant) : une saisie, un
+        # contrôle de format, puis une recherche EXACTE sur la plateforme.
         agent_box = ctk.CTkFrame(frame)
         agent_box.pack(fill="x")
-        ctk.CTkLabel(agent_box, text="Agent déposant (propriétaire des vidéos)",
+        ctk.CTkLabel(agent_box, text="Propriétaire des vidéos (votre identifiant universitaire)",
                      font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=3,
                                                            padx=12, pady=(12, 2), sticky="w")
-        ctk.CTkLabel(agent_box, text="Les vidéos déposées appartiendront à ce compte Pod.",
+        ctk.CTkLabel(agent_box,
+                     text="Les vidéos déposées appartiendront à ce compte Pod. "
+                          "« Mes vidéos » affiche ses vidéos et celles dont il est co-propriétaire.",
                      text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11)).grid(
             row=1, column=0, columnspan=3, padx=12, pady=(0, 6), sticky="w")
 
-        self.agent_filter = ctk.CTkEntry(agent_box, width=300,
-                                         placeholder_text="🔍 nom / identifiant…")
-        self.agent_filter.grid(row=2, column=0, columnspan=2, padx=8, pady=8, sticky="ew")
-        self.agent_filter.bind("<KeyRelease>", lambda e: self._render_users())
-        ctk.CTkButton(agent_box, text="🔄  Recharger", width=130,
-                      command=lambda: self._run(self._load_all_users), fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV, text_color=T_SUR_NEUTRE).grid(row=2, column=2, padx=8, pady=8)
+        self.agent_entry = ctk.CTkEntry(agent_box, width=220,
+                                        placeholder_text="ex. abc1234d")
+        self.agent_entry.grid(row=2, column=0, padx=(12, 8), pady=8, sticky="w")
+        actuel = self.config_data.get("agent_username", "")
+        if self._identifiant_valide(actuel):
+            self.agent_entry.insert(0, actuel)
+        self.agent_entry.bind("<Return>", lambda e: self._valider_identifiant_config())
+        self.agent_valider_btn = ctk.CTkButton(
+            agent_box, text="✅  Valider", width=130,
+            fg_color=C_SUCCES, hover_color=C_SUCCES_SURV,
+            command=self._valider_identifiant_config)
+        self.agent_valider_btn.grid(row=2, column=1, padx=8, pady=8, sticky="w")
 
-        self.users_count_lbl = ctk.CTkLabel(agent_box, text="", text_color=T_SECONDAIRE,
-                                            font=ctk.CTkFont(size=11))
-        self.users_count_lbl.grid(row=3, column=0, columnspan=3, padx=12, sticky="w")
-
-        self.agent_results = ctk.CTkScrollableFrame(agent_box, height=220)
-        self.agent_results.grid(row=4, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew")
-        agent_box.columnconfigure(1, weight=1)
+        self.agent_msg = ctk.CTkLabel(agent_box, text="", text_color=T_SECONDAIRE,
+                                      font=ctk.CTkFont(size=11), wraplength=760,
+                                      justify="left")
+        self.agent_msg.grid(row=3, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w")
+        agent_box.columnconfigure(2, weight=1)
 
         # — Aide token —
         help_box = ctk.CTkFrame(frame, fg_color=S_CARTE, corner_radius=8)
@@ -3058,6 +3108,33 @@ class App(_AppBase):
                  "par poste — jamais dans l'application.",
             justify="left", text_color=T_SECONDAIRE, wraplength=820).pack(anchor="w", padx=14, pady=(0, 12))
 
+    def _valider_identifiant_config(self):
+        """Onglet Configuration : valide l'identifiant saisi (thread principal),
+        puis le recherche sur la plateforme en arrière-plan."""
+        texte = self.agent_entry.get()        # lu ICI, jamais depuis un thread
+        if not self._identifiant_valide(texte):
+            _, message = self._resoudre_identifiant(texte)     # message de format
+            self.agent_msg.configure(text=f"❌  {message}", text_color=T_ERREUR)
+            return
+        self.agent_valider_btn.configure(state="disabled")
+        self.agent_msg.configure(text="⏳  Recherche du compte…", text_color=T_SECONDAIRE)
+
+        def travail():
+            compte, message = self._resoudre_identifiant(texte)
+            self._ui(fin, compte, message)
+
+        def fin(compte, message):
+            self.agent_valider_btn.configure(state="normal")
+            if compte:
+                self._pick_agent(compte)
+                self.agent_msg.configure(
+                    text=f"✅  Propriétaire des vidéos : {compte.get('username', '')}",
+                    text_color=T_SUCCES)
+            else:
+                self.agent_msg.configure(text=f"❌  {message}", text_color=T_ERREUR)
+
+        self._run(travail)
+
     def _forget_token(self):
         """Efface le token de ce poste et se déconnecte."""
         cfg.clear_token()
@@ -3066,10 +3143,6 @@ class App(_AppBase):
         self.all_users = []
         if hasattr(self, "token_entry"):
             self.token_entry.delete(0, "end")
-        if hasattr(self, "agent_results"):
-            self._render_users()
-        if hasattr(self, "users_count_lbl"):
-            self.users_count_lbl.configure(text="")
         self._set_status(False)
         self.config_msg.configure(
             text="🚪  Token effacé de ce poste. Saisissez-le à nouveau pour vous reconnecter.",
@@ -3360,23 +3433,21 @@ class App(_AppBase):
             self._ui(self._log, f"Impossible de charger les sites : {e}")
 
     def _load_all_users(self):
-        """(Thread) Charge tous les comptes Pod (paginé) et rafraîchit les vues qui en dépendent."""
+        """(Thread) Charge tous les comptes Pod (paginé).
+
+        L'annuaire ne sert plus à choisir le PROPRIÉTAIRE (identifiant saisi),
+        mais reste nécessaire aux CO-propriétaires (OwnerPicker) et aux
+        libellés de « Mes vidéos »."""
         if not self.api:
-            self._ui(self.users_count_lbl.configure,
-                     text="Connectez-vous d'abord.", text_color=T_ALERTE)
             return
-        self._ui(self.users_count_lbl.configure,
-                 text="⏳  Chargement de la liste des utilisateurs…", text_color=T_SECONDAIRE)
         self._ui(self._log, "Chargement des utilisateurs (/rest/users/)…")
         try:
             users = self.api.get_all_users()
             users.sort(key=lambda u: (u.get("username") or "").lower())
             self.all_users = users
-            self._ui(self._render_users)
-            # Présélection : pré-remplir le filtre avec le propriétaire enregistré
             ag = self.config_data.get("agent_username", "")
             if ag:
-                self._ui(self._preselect_agent, ag)
+                self._ui(self._refresh_owner_status)
             elif not self.config_data.get("owner_prompt_seen"):
                 # 1ʳᵉ connexion sans compte enregistré et fenêtre jamais montrée :
                 # on tente la détection automatique (Piste 1), sinon on ouvrira la
@@ -3384,66 +3455,16 @@ class App(_AppBase):
                 # l'utilisateur passe par l'onglet Configuration.
                 self._detect_token_owner()
             if users:
-                self._ui(self.users_count_lbl.configure,
-                         text=f"✅  {len(users)} utilisateur(s) chargé(s). Filtrez puis cliquez pour choisir.",
-                         text_color=T_SUCCES)
                 self._ui(self._log, f"Utilisateurs chargés : {len(users)}.")
             else:
-                self._ui(self.users_count_lbl.configure,
-                         text="⚠️  Aucun utilisateur renvoyé. Le compte du token n'a peut-être "
-                              "pas le droit de lister les utilisateurs (compte superutilisateur requis).",
-                         text_color=T_ALERTE)
-                self._ui(self._log, "⚠️ /rest/users/ a renvoyé 0 utilisateur — vérifiez les droits du token "
-                                    "(ou lancez verifier.py).")
+                self._ui(self._log, "⚠️ /rest/users/ a renvoyé 0 utilisateur — le choix des "
+                                    "co-propriétaires sera vide (vérifiez les droits du token).")
         except Exception as e:
-            self._signaler(self.users_count_lbl, e, "Chargement des utilisateurs")
+            self._ui(self._log, f"⚠️ Chargement des utilisateurs impossible : {message_utilisateur(e)}")
 
     def _user_label(self, u: dict) -> str:
         """Libellé lisible d'un compte : « identifiant — Prénom Nom »."""
         return f"{u.get('username','?')} — {u.get('first_name','')} {u.get('last_name','')}".strip()
-
-    def _preselect_agent(self, username: str):
-        """Présélection : pré-remplit le filtre avec le propriétaire enregistré.
-        La liste reste entièrement utilisable : effacer le filtre permet de
-        choisir un autre compte (le support dépose sur différents comptes)."""
-        if hasattr(self, "agent_filter") and not self.agent_filter.get().strip():
-            self.agent_filter.insert(0, username)
-            self._render_users()
-        self._refresh_owner_status()
-
-    def _render_users(self):
-        """Affiche la liste filtrée des comptes pour choisir l'agent déposant."""
-        flt = self.agent_filter.get().strip().lower() if hasattr(self, "agent_filter") else ""
-        for w in self.agent_results.winfo_children():
-            w.destroy()
-
-        if not self.all_users:
-            ctk.CTkLabel(self.agent_results,
-                         text="Liste non chargée. Cliquez sur « Recharger ».",
-                         text_color=T_SECONDAIRE).pack(pady=10)
-            return
-
-        matches = [u for u in self.all_users if not flt or flt in self._user_label(u).lower()]
-        CAP = 300  # éviter de créer des milliers de boutons (Tk gèlerait)
-        current_username = self.config_data.get("agent_username", "")
-
-        for u in matches[:CAP]:
-            is_current = (u.get("username", "") == current_username)
-            label = ("✅  " if is_current else "      ") + self._user_label(u)
-            ctk.CTkButton(self.agent_results, text=label, anchor="w",
-                          fg_color=("gray75", "gray30") if is_current else "transparent",
-                          text_color=("gray10", "gray90"), hover_color=("gray75", "gray28"),
-                          height=28, font=ctk.CTkFont(size=12),
-                          command=lambda uu=u: self._pick_agent(uu)).pack(fill="x", pady=1)
-
-        if len(matches) > CAP:
-            ctk.CTkLabel(self.agent_results,
-                         text=f"… +{len(matches) - CAP} autres. Affinez le filtre.",
-                         text_color=T_SECONDAIRE).pack(pady=4)
-        elif not matches:
-            ctk.CTkLabel(self.agent_results,
-                         text="Aucun résultat ne correspond au filtre.",
-                         text_color=T_SECONDAIRE).pack(pady=8)
 
     def _pick_agent(self, user: dict):
         """Enregistre le compte choisi comme propriétaire par défaut des dépôts."""
@@ -3453,8 +3474,9 @@ class App(_AppBase):
         self.agent_lbl.configure(text=f"Dépôt au nom de :\n{user.get('username','')}")
         self.config_msg.configure(
             text=f"✅  Propriétaire des vidéos : {user.get('username','')}", text_color=T_SUCCES)
-        if hasattr(self, "agent_results"):
-            self._render_users()   # met à jour la coche ✅
+        if hasattr(self, "agent_entry"):
+            self.agent_entry.delete(0, "end")
+            self.agent_entry.insert(0, user.get("username", ""))
         self._refresh_owner_status()   # met à jour l'état dans l'onglet Téléversement
 
     # ── Détection automatique du propriétaire du token ───────────────────
@@ -3516,38 +3538,30 @@ class App(_AppBase):
         self.config_data["agent_owner_url"] = url
         cfg.save_config(self.config_data)
         self.agent_lbl.configure(text=f"Dépôt au nom de :\n{username}  (détecté)")
-        if hasattr(self, "agent_filter"):
-            self.agent_filter.delete(0, "end")
-            self.agent_filter.insert(0, username)
-            self._render_users()
+        if hasattr(self, "agent_entry"):
+            self.agent_entry.delete(0, "end")
+            self.agent_entry.insert(0, username)
         self._refresh_owner_status()
         self._log(f"Propriétaire du token détecté automatiquement : {username}.")
 
     def _prompt_pick_owner(self, suggestion: str = ""):
-        """Ouvre la fenêtre « Choisissez le compte déposant » (mono-sélection).
+        """Demande l'identifiant du compte déposant après la 1ʳᵉ connexion
+        (étape 2 de l'assistant), quand il n'a pas pu être détecté. Une
+        suggestion n'est pré-remplie que si elle a la forme d'un identifiant."""
+        if not self.api:
+            return
 
-        S'affiche après la 1ʳᵉ connexion quand le compte déposant n'a pas pu être
-        déterminé automatiquement. L'utilisateur clique sur un compte : il devient
-        le propriétaire par défaut des vidéos (modifiable ensuite via l'onglet
-        Configuration). Le paramètre `suggestion` pré-remplit le filtre.
-        """
-        def on_chosen(user: dict):
-            # Réutilise la logique existante : enregistre le compte + coche ✅.
-            self._pick_agent(user)
-            self._log(f"Compte déposant choisi : {user.get('username','')}.")
+        def trouve(compte):
+            self._pick_agent(compte)
+            self._log(f"Compte déposant choisi : {compte.get('username', '')}.")
             self._show_tab("upload")   # on enchaîne directement sur le téléversement
 
-        OwnerPicker(
-            self,
-            on_done=lambda *_: None,          # inutilisé en mode mono-sélection
-            single=True,
-            on_single=on_chosen,
-            title="Choisissez le compte déposant",
+        IdentifiantDialog(
+            self, on_found=trouve, title="Votre identifiant universitaire",
             intro=("Au nom de quel compte les vidéos seront-elles déposées ?\n"
-                   "Cliquez sur le compte concerné. Vous pourrez le changer\n"
-                   "à tout moment depuis l'onglet « Configuration »."),
-            prefilter=suggestion,
-        )
+                   "Saisissez VOTRE identifiant universitaire (ex. abc1234d).\n"
+                   "Vous pourrez le changer depuis l'onglet « Configuration »."),
+            prefill=suggestion if self._identifiant_valide(suggestion) else "")
 
     def _build_tab_log(self):
         """Construit l'onglet Journal (zone de texte horodatée + bouton Effacer)."""
@@ -4018,16 +4032,17 @@ class App(_AppBase):
              "Le token remplace l'identifiant et le mot de passe : il donne les mêmes "
              "droits que le compte auquel il est rattaché."),
 
-            ("2. Choisir le compte déposant",
+            ("2. Votre identifiant universitaire (compte déposant)",
              "Les vidéos doivent être déposées au nom d'un compte (leur futur "
              "propriétaire). À la première connexion :\n"
              "• si l'application reconnaît votre compte avec certitude, elle le "
              "sélectionne automatiquement ;\n"
-             "• sinon, une fenêtre « Choisissez le compte déposant » s'ouvre : "
-             "cliquez sur le compte concerné.\n\n"
+             "• sinon, elle vous demande votre IDENTIFIANT UNIVERSITAIRE : 3 lettres, "
+             "4 chiffres et 1 lettre (ex. abc1234d). Elle vérifie qu'un compte de la "
+             "plateforme porte exactement cet identifiant.\n\n"
              "Ce choix est mémorisé sur ce poste. Vous pouvez le changer à tout "
-             "moment dans l'onglet « Configuration » (champ de recherche des comptes), "
-             "ce qui est utile si vous déposez pour plusieurs enseignants."),
+             "moment dans l'onglet « Configuration », ce qui est utile si vous "
+             "déposez pour plusieurs enseignants."),
 
             ("3. Ajouter des vidéos",
              "Dans l'onglet « Téléversement », trois façons d'ajouter des fichiers :\n"
@@ -4062,17 +4077,20 @@ class App(_AppBase):
              "modifier les vidéos (facultatif)."),
 
             ("5. Propriétaire des vidéos (obligatoire)",
-             "Vous devez choisir explicitement le compte PROPRIÉTAIRE des vidéos "
-             "avant tout envoi, via le bouton « 🎯 Choisir le propriétaire… ». "
+             "Vous devez indiquer le compte PROPRIÉTAIRE des vidéos avant tout "
+             "envoi, en saisissant son identifiant universitaire via le bouton "
+             "« 🎯 Saisir l'identifiant… ». "
              "L'état affiché à côté indique :\n"
              "• « ⚠️ à définir avant l'envoi » (orange) tant qu'aucun compte n'est "
              "choisi ;\n"
              "• « ✅ [nom] » (vert) une fois le compte défini.\n\n"
-             "Si vous lancez l'envoi sans avoir choisi de propriétaire, "
-             "l'application NE téléverse RIEN et ouvre le sélecteur : ce blocage "
-             "est volontaire, pour éviter tout dépôt au mauvais nom. Le compte du "
-             "token est présélectionné, donc le choix se fait en un clic. Ce "
-             "propriétaire s'applique à tout le lot."),
+             "Si vous lancez l'envoi sans propriétaire, ou avec un compte qui n'est "
+             "pas un identifiant universitaire, l'application NE téléverse RIEN et "
+             "vous le demande : ce blocage est volontaire, pour éviter tout dépôt "
+             "au mauvais nom. Ce propriétaire s'applique à tout le lot.\n\n"
+             "Les propriétaires additionnels, eux, se choisissent dans la liste de "
+             "toutes les personnes de la plateforme (bouton « 👥 Propriétaires "
+             "additionnels… »)."),
 
             ("6. Lancer le téléversement",
              "Cliquez sur « Lancer le téléversement ». Deux barres de progression "
@@ -4739,6 +4757,73 @@ class ProgressModal(ctk.CTkToplevel):
         except Exception:
             pass
         self.destroy()
+
+
+class IdentifiantDialog(ctk.CTkToplevel):
+    """Saisie de l'identifiant universitaire du propriétaire des vidéos.
+
+    Le format est contrôlé tout de suite (message immédiat) ; la recherche du
+    compte sur la plateforme se fait en arrière-plan, et la fenêtre ne se
+    ferme que si le compte existe."""
+
+    def __init__(self, master: App, on_found, title="Propriétaire des vidéos",
+                 intro: str = "", prefill: str = ""):
+        super().__init__(master)
+        self.master_app = master
+        self.on_found = on_found
+        self.title(title)
+        self.geometry("470x250")
+        _focus_toplevel(self, master)
+
+        ctk.CTkLabel(self, text=intro or "Saisissez votre identifiant universitaire.",
+                     justify="left").pack(padx=14, pady=(14, 8), anchor="w")
+        self.entry = ctk.CTkEntry(self, width=220, placeholder_text="ex. abc1234d")
+        self.entry.pack(padx=14, anchor="w")
+        if prefill:
+            self.entry.insert(0, prefill)
+        self.entry.bind("<Return>", self._valider)
+        self.msg = ctk.CTkLabel(self, text="", wraplength=440, justify="left",
+                                text_color=T_SECONDAIRE, font=ctk.CTkFont(size=11))
+        self.msg.pack(padx=14, pady=(6, 0), anchor="w")
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=14, pady=12, side="bottom")
+        self.btn = ctk.CTkButton(btns, text="Valider", fg_color=C_SUCCES,
+                                 hover_color=C_SUCCES_SURV, command=self._valider)
+        self.btn.pack(side="right")
+        ctk.CTkButton(btns, text="Annuler", fg_color=C_NEUTRE, hover_color=C_NEUTRE_SURV,
+                      command=self.destroy, text_color=T_SUR_NEUTRE).pack(side="right", padx=8)
+        self.after(100, self.entry.focus_set)
+
+    def _valider(self, *_):
+        """Contrôle du format (immédiat), puis recherche en arrière-plan."""
+        texte = self.entry.get()              # lu ICI, dans le thread principal
+        if not App._identifiant_valide(texte):
+            _, message = self.master_app._resoudre_identifiant(texte)
+            self.msg.configure(text=f"❌  {message}", text_color=T_ERREUR)
+            return
+        self.btn.configure(state="disabled")
+        self.msg.configure(text="⏳  Recherche du compte…", text_color=T_SECONDAIRE)
+        self.master_app._run(self._chercher, texte)
+
+    def _chercher(self, texte):
+        """(Thread) Recherche exacte du compte sur la plateforme."""
+        compte, message = self.master_app._resoudre_identifiant(texte)
+        self.master_app._ui(self._resultat, compte, message)
+
+    def _resultat(self, compte, message):
+        """(Thread principal) Ferme la fenêtre si le compte existe, sinon explique."""
+        try:
+            if not self.winfo_exists():
+                return                         # fenêtre fermée entre-temps
+        except Exception:
+            return
+        if compte:
+            self.on_found(compte)
+            self.destroy()
+            return
+        self.btn.configure(state="normal")
+        self.msg.configure(text=f"❌  {message}", text_color=T_ERREUR)
 
 
 class OwnerPicker(ctk.CTkToplevel):

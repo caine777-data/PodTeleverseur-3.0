@@ -27,6 +27,15 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".pod_televerseur.json")
 KEYRING_SERVICE = "PodTeleverseur-UToulouse"     # ≠ "PodAdmin-UToulouse"
 KEYRING_TOKEN_KEY = "service_token"
 
+# ── Identifiant universitaire du propriétaire des vidéos ────────────────────
+# L'enseignant SAISIT son identifiant au lieu de choisir dans l'annuaire de
+# tous les comptes. Format relevé par la sonde verifier_identifiant.py
+# (26/09/2026) : les 32 comptes d'usagers sont TOUS « 3 lettres, 4 chiffres,
+# 1 lettre » (ex. abc1234a). Les 9 autres comptes sont des comptes LOCAUX
+# d'administration (DEPOT…) : le format strict les écarte d'office, si bien
+# qu'aucun dépôt ne peut être attribué à l'un d'eux.
+IDENTIFIANT_FORMAT = r"^[a-z]{3}[0-9]{4}[a-z]$"
+
 # ── Compte VÉHICULE embarqué (session web pour le chunké des gros fichiers) ──
 # Compte LOCAL sans privilège, servant UNIQUEMENT à ouvrir la session web du
 # téléversement par morceaux. La vidéo naît à son nom puis est AUSSITÔT
