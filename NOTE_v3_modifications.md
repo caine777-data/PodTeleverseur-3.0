@@ -98,10 +98,17 @@ Tests dans `tests/test_evolutions_podadmin.py`, chacun éprouvé par mutation.
 | Barres de progression masquées au repos, bilan « Vous pouvez les retirer » | Deux barres vides en permanence n'informaient de rien | `TestProgressionEtBilan` |
 
 Non repris : la vérification du compte DEPOT avant l'envoi (ses identifiants
-sont embarqués dans `config.py`, toujours présents). À reprendre quand
-PodAdmin les aura commitées : interruption d'un dépôt, attente courte après
-un 502/503, verrouillage de la liste pendant l'envoi, détection des doublons
-de fichiers par clé normalisée.
+sont embarqués dans `config.py`, toujours présents).
+
+### Évolutions du dépôt reprises de PodAdmin 1.9.2
+
+| Évolution | Pourquoi | Test |
+|---|---|---|
+| Bouton **🛑 Interrompre** (visible pendant un lot), qui arrête aussi la vidéo en cours | Un gros fichier peut prendre une demi-heure, l'attente après un 504 jusqu'à 30 min. L'arrêt a lieu avant la finalisation : aucune vidéo créée à moitié | `TestArretEnvoiDirect`, `TestArretEnvoiParMorceaux`, `TestLotInterrompu` |
+| Vidéo « ⚠️ à vérifier » si l'arrêt tombe pendant l'attente d'un 504 | Elle existe peut-être : jamais renvoyée seule (exclue aussi des échecs à relancer, point propre au Téléverseur) ; repère écrit au Journal | `TestLotInterrompu`, `TestAttenteApresFinalisation` |
+| Attente de **3 min** après un 502/503 (`CHUNK_VERIFY_TIMEOUT_502_S`), 30 min après un 504 | Un 502 réel (25/09/2026) : la vidéo n'est jamais apparue, et 30 min d'attente bloquaient tout le lot | `TestAttenteApresFinalisation` |
+| Pendant un lot : ajout permis (la vidéo part à la suite), retraits bloqués | Retirer une ligne décalait la liste et faisait sauter la vidéo suivante sans rien dire | `TestListeProtegeePendantUnLot`, `TestLotInterrompu` |
+| Ajout de fichiers : chemins normalisés, bilan exact, confirmation avant de renvoyer un fichier déjà envoyé dans la session | Sous Windows, le même fichier entrait deux fois selon son écriture ; un fichier retiré puis réajouté créait un doublon sur Pod | `TestAjoutDeFichiers` |
 
 ## À tester sur l'instance
 0. **3.4.2** — Déposer un gros fichier (> 150 Mo) sur l'instance de TEST :
